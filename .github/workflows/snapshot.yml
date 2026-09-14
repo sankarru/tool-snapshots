@@ -47,6 +47,10 @@ jobs:
           java-version: '21'
           distribution: 'graalvm-community'
 
+      - name: Setup Gradle (artifact fetching only, no build plugins run)
+        if: steps.gate.outputs.run == 'yes'
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Setup Android SDK (D8/R8 tracing needs android.jar)
         if: steps.gate.outputs.run == 'yes'
         uses: android-actions/setup-android@v3

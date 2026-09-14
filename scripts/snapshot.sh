@@ -186,6 +186,74 @@ EOF
   echo "$SPLUG" > "$WORK/kotlinc-splug.txt"
 }
 
+# Room via standalone KSP2 (KSP2 is NOT a kotlinc plugin: it generates
+# sources first, which kotlinc then compiles). Two roles here:
+#  - the KSP run itself goes under the agent into ksp-meta/ (fuel for a
+#    future ksp-snapshot; kept OUT of kotlinc's metadata dir), and
+#  - kotlinc then compiles room.kt + the generated sources under the
+#    kotlinc agent, so the snapshot provably handles Room-shaped code.
+trace_room() { # $1 = kotlinc dist dir
+  local kdir="$1"
+  local ANDROID_JAR
+  ANDROID_JAR="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" 2>/dev/null | sort | tail -1 || true)"
+  if [ -z "$ANDROID_JAR" ]; then
+    echo "--- trace: Room SKIPPED (no android.jar; no ANDROID_HOME) ---"
+    return 0
+  fi
+  echo "--- resolve KSP/Room artifacts ---"
+  # Fresh output dir: Copy tasks don't delete stale artifacts from removed
+  # dependencies, and stale jars on the kotlinc classpath cause exactly the
+  # kind of split-package ghost this pipeline hunts.
+  rm -rf ksp/fetch-deps/build
+  gradle -p ksp/fetch-deps fetchAA fetchProc fetchCompile --console=plain --no-daemon -q
+  local fdir=ksp/fetch-deps/build
+  local aa_cp proc_cp cmp_cp
+  aa_cp="$(ls "$fdir"/aa/*.jar | tr '\n' ':')$kdir/lib/kotlin-stdlib.jar:$(ls "$WORK"/tracelibs/kotlinx-coroutines-core-jvm-*.jar)"
+  proc_cp="$(ls "$fdir"/proc/*.jar | tr '\n' ':')"
+  cmp_cp="$(ls "$fdir"/compile/*.jar | tr '\n' ':')"
+  # AARs carry their classes inside classes.jar -- explode once, reuse for
+  # both the KSP -libraries and the kotlinc -cp.
+  rm -rf "$WORK/room-cp" && mkdir -p "$WORK/room-cp"
+  for a in "$fdir"/compile/*.aar; do
+    n="$(basename "$a" .aar)"
+    mkdir -p "$WORK/room-cp/$n"
+    unzip -o -q "$a" classes.jar -d "$WORK/room-cp/$n"
+    cmp_cp="$cmp_cp$WORK/room-cp/$n/classes.jar:"
+  done
+  echo "$cmp_cp" > "$WORK/room-compile-cp.txt"
+  rm -rf "$WORK/room-src" && mkdir -p "$WORK/room-src"
+  cp "$PWD/samples/room.kt" "$WORK/room-src/"
+
+  echo "--- trace: KSP2 generates Room impls (agent -> ksp-meta, future fuel) ---"
+  rm -rf "$WORK/ksp-out" "$WORK/ksp-meta" && mkdir -p "$WORK/ksp-meta"
+  "$JAVA_HOME/bin/java" "-agentlib:native-image-agent=config-output-dir=$WORK/ksp-meta" \
+    -cp "$aa_cp" com.google.devtools.ksp.cmdline.KSPJvmMain \
+    -jvm-target 17 -module-name=room \
+    -source-roots "$WORK/room-src" \
+    -libraries "$cmp_cp$ANDROID_JAR" \
+    -project-base-dir "$WORK/room-proj" \
+    -output-base-dir="$WORK/ksp-out" \
+    -caches-dir="$WORK/ksp-out/caches" \
+    -class-output-dir="$WORK/ksp-out/classes" \
+    -kotlin-output-dir="$WORK/ksp-out/kotlin" \
+    -java-output-dir "$WORK/ksp-out/java" \
+    -resource-output-dir "$WORK/ksp-out/res" \
+    -language-version=2.2 -api-version=2.2 \
+    "$proc_cp"
+  find "$WORK/ksp-out/kotlin" "$WORK/ksp-out/java" -type f | head
+  rm -rf "$OUT/ksp-trace-meta" && cp -r "$WORK/ksp-meta" "$OUT/ksp-trace-meta"
+
+  echo "--- trace: kotlinc compiles Room sources + generated impls ---"
+  rm -rf "$SAMPLE/kt-room" && mkdir -p "$SAMPLE/kt-room"
+  local kcp
+  kcp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
+  # shellcheck disable=SC2086
+  "$JAVA_HOME/bin/java" "$AGENT" -cp "$kcp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
+    -cp "$cmp_cp$ANDROID_JAR" -d "$SAMPLE/kt-room" \
+    "$WORK/room-src/room.kt" "$WORK/ksp-out/kotlin/"*.kt
+  find "$SAMPLE/kt-room" -name "*Db_Impl*" -o -name "*Dao_Impl*" | head -4
+}
+
 link_snapshot() {
   # $1 = main class, $2 = classpath, $3 = binary name
   echo "--- traced metadata ($META) ---"
@@ -238,6 +306,7 @@ case "$TOOL" in
   kotlinc)
     KDIR="$(fetch_kotlinc)"
     trace_kotlinc "$KDIR"
+    trace_room "$KDIR"
     KCP="$(cat "$WORK/kotlinc-cp.txt")"
     SPLUG="$(cat "$WORK/kotlinc-splug.txt")"
     CPLUG="$KDIR/lib/compose-compiler-plugin.jar"
@@ -292,6 +361,16 @@ case "$TOOL" in
     echo "--- smoke: script execution ---"
     "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
       -script "$PWD/samples/script.kts" | grep -m1 "script says 42" && echo "SCRIPT-OK"
+    if [ -d "$WORK/ksp-out/kotlin" ]; then
+      echo "--- smoke: Room sources + generated impls inside the image ---"
+      RCP="$(cat "$WORK/room-compile-cp.txt")"
+      AJAR="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" 2>/dev/null | sort | tail -1)"
+      rm -rf "$SAMPLE/kt-smoke-room" && mkdir -p "$SAMPLE/kt-smoke-room"
+      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$RCP$AJAR" \
+        -d "$SAMPLE/kt-smoke-room" \
+        "$WORK/room-src/room.kt" "$WORK/ksp-out/kotlin/"*.kt
+      find "$SAMPLE/kt-smoke-room" -name "*Db_Impl*" | head -2 && echo "ROOM-OK"
+    fi
     ;;
   *)
     echo "unknown TOOL=$TOOL" >&2
