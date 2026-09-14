@@ -7,10 +7,6 @@ on:
         description: 'Tools to snapshot (comma: d8,r8,kotlinc)'
         required: true
         default: 'd8,r8'
-      arch:
-        description: 'Architectures (comma: x64,arm64)'
-        required: true
-        default: 'arm64'
       kotlin_version:
         description: 'Kotlin release tag (e.g. v2.2.20)'
         required: true
@@ -25,13 +21,12 @@ permissions:
 
 jobs:
   snapshot:
-    name: snapshot ${{ matrix.tool }} (${{ matrix.arch }})
+    name: snapshot ${{ matrix.tool }} (arm64)
     strategy:
       fail-fast: false
       matrix:
         tool: [d8, r8, kotlinc]
-        arch: [x64, arm64]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +34,7 @@ jobs:
       - name: Filter by inputs
         id: gate
         run: |
-          if [[ ",${{ inputs.tools }}," == *",${{ matrix.tool }},"* ]] && \
-             [[ ",${{ inputs.arch }}," == *",${{ matrix.arch }},"* ]]; then
+          if [[ ",${{ inputs.tools }}," == *",${{ matrix.tool }},"* ]]; then
             echo "run=yes" >> "$GITHUB_OUTPUT"
           else
             echo "run=no" >> "$GITHUB_OUTPUT"
@@ -86,7 +80,66 @@ jobs:
         if: steps.gate.outputs.run == 'yes'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.tool }}-snapshot-${{ matrix.arch }}
+          name: ${{ matrix.tool }}-snapshot-arm64
           path: out/${{ matrix.tool }}-snapshot*
           if-no-files-found: error
           retention-days: 7
+
+  smoke-compose:
+    name: smoke snapshots on compose-aot (arm64)
+    needs: snapshot
+    # Only meaningful when both snapshots were built in this run.
+    if: contains(inputs.tools, 'd8') && contains(inputs.tools, 'r8')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tool-snapshots
+
+      - name: Checkout compose-aot
+        uses: actions/checkout@v4
+        with:
+          repository: sankarru/compose-aot
+          path: compose-aot
+
+      - name: Setup GraalVM JDK 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm-community'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install SDK packages
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
+          fi
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+          echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
+
+      - name: Download d8 snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: d8-snapshot-arm64
+          path: dist
+
+      - name: Download r8 snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: r8-snapshot-arm64
+          path: dist
+
+      - name: Build compose-aot release (JVM R8/D8 baseline)
+        working-directory: compose-aot
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --console=plain --no-daemon
+
+      - name: Smoke snapshots over real Compose bytecode
+        run: bash tool-snapshots/scripts/smoke-compose.sh
