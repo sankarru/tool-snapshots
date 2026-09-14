@@ -6,7 +6,7 @@ on:
       tools:
         description: 'Tools to snapshot (comma: d8,r8,kotlinc)'
         required: true
-        default: 'd8,r8'
+        default: 'kotlinc'
       kotlin_version:
         description: 'Kotlin release tag (e.g. v2.2.20)'
         required: true
