@@ -136,6 +136,12 @@ jobs:
           cp -r /tmp/fixed-sdk-dl/android-sdk/build-tools/37.0.0 "$ANDROID_HOME/build-tools/"
           rm -rf /tmp/fixed-sdk.tgz /tmp/fixed-sdk-dl
           "$ANDROID_HOME/build-tools/37.0.0/aapt2" version
+          # AGP ignores the SDK folder for AAPT2 and downloads its own
+          # (x86_64-only) copy from Maven -- force the fixed arm64 binary.
+          # Written into the throwaway checkout, not committed anywhere.
+          printf '\nandroid.aapt2FromMavenOverride=%s\n' \
+            "$ANDROID_HOME/build-tools/37.0.0/aapt2" >> compose-aot/gradle.properties
+          tail -2 compose-aot/gradle.properties
 
       - name: Download d8 snapshot
         uses: actions/download-artifact@v4
