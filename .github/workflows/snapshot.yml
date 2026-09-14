@@ -10,7 +10,7 @@ on:
       arch:
         description: 'Architectures (comma: x64,arm64)'
         required: true
-        default: 'x64,arm64'
+        default: 'arm64'
       kotlin_version:
         description: 'Kotlin release tag (e.g. v2.2.20)'
         required: true
