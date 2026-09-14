@@ -87,7 +87,7 @@ fun main(args: Array<String>) {
 EOF
   rm -rf "$SAMPLE/kt-out" && mkdir -p "$SAMPLE/kt-out"
   "$JAVA_HOME/bin/java" "$AGENT" -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -no-stdlib -no-reflect -d "$SAMPLE/kt-out" "$SAMPLE/hello.kt"
+    -d "$SAMPLE/kt-out" "$SAMPLE/hello.kt"
   find "$SAMPLE/kt-out" -name "*.class"
   echo "$cp" > "$WORK/kotlinc-cp.txt"
 }
@@ -150,7 +150,7 @@ case "$TOOL" in
     "$OUT/kotlinc-snapshot" -version
     echo "--- smoke: compile hello.kt ---"
     rm -rf "$SAMPLE/kt-smoke" && mkdir -p "$SAMPLE/kt-smoke"
-    "$OUT/kotlinc-snapshot" -no-stdlib -no-reflect \
+    "$OUT/kotlinc-snapshot" \
       -d "$SAMPLE/kt-smoke" "$SAMPLE/hello.kt"
     find "$SAMPLE/kt-smoke" -name "*.class"
     ;;
