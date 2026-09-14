@@ -110,6 +110,14 @@ EOF
   "$JAVA_HOME/bin/java" "$AGENT" -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
     -d "$SAMPLE/kt-out" "$SAMPLE/hello.kt"
   find "$SAMPLE/kt-out" -name "*.class"
+  # A deliberately broken file: exercises the diagnostic/message-bundle
+  # paths so the agent records them too (a clean compile never touches
+  # error rendering, and missing bundles crash the snapshot at runtime).
+  cat > "$SAMPLE/err.kt" <<'EOF'
+val x: Int = "nope"
+EOF
+  "$JAVA_HOME/bin/java" "$AGENT" -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
+    -d "$SAMPLE/kt-err" "$SAMPLE/err.kt" || true
   echo "$cp" > "$WORK/kotlinc-cp.txt"
 }
 
@@ -171,7 +179,12 @@ case "$TOOL" in
     "$OUT/kotlinc-snapshot" -version
     echo "--- smoke: compile hello.kt ---"
     rm -rf "$SAMPLE/kt-smoke" && mkdir -p "$SAMPLE/kt-smoke"
-    "$OUT/kotlinc-snapshot" \
+    # -kotlin-home is mandatory: the snapshot cannot discover the dist
+    # layout via class-resource lookup (PathUtil.getResourcePathForClass has
+    # no file path inside a native image), so point it at the home
+    # explicitly. The home's lib/ (stdlib, reflect, plugins) must be present
+    # at runtime -- the snapshot replaces only the launcher, not the dist.
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" \
       -d "$SAMPLE/kt-smoke" "$SAMPLE/hello.kt"
     find "$SAMPLE/kt-smoke" -name "*.class"
     ;;
