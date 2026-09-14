@@ -78,8 +78,27 @@ EOF
 
 trace_kotlinc() {
   local kdir="$1"
+  # kotlin-compiler.jar bundles jline native-image.properties files whose
+  # reflection/resource JSONs are NOT in the dist (packaging bug) -- the
+  # link aborts on the dangling reference. Strip those dirs into a patched
+  # copy (batch compilation never touches the jline REPL paths anyway).
+  local patched="$WORK/kotlinc-patched"
+  mkdir -p "$patched"
+  python3 - "$kdir/lib/kotlin-compiler.jar" "$patched/kotlin-compiler.jar" <<'EOF'
+import sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+zin = zipfile.ZipFile(src)
+zout = zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED)
+dropped = 0
+for item in zin.infolist():
+    if item.filename.startswith('META-INF/native-image/org.jline/'):
+        dropped += 1
+        continue
+    zout.writestr(item, zin.read(item.filename))
+print(f"patched kotlin-compiler.jar, dropped {dropped} dangling jline entries")
+EOF
   local cp
-  cp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
+  cp="$patched/kotlin-compiler.jar:$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions -e 'lib/kotlin-compiler\.jar$' | tr '\n' ':')"
   cat > "$SAMPLE/hello.kt" <<'EOF'
 fun main(args: Array<String>) {
   println("hello from ${args.firstOrNull() ?: "snapshot"}")
