@@ -94,6 +94,14 @@ EOF
 
 link_snapshot() {
   # $1 = main class, $2 = classpath, $3 = binary name
+  echo "--- traced metadata ($META) ---"
+  ls -la "$META"
+  for f in reflect-config.json jni-config.json resource-config.json \
+           proxy-config.json serialization-config.json; do
+    [ -f "$META/$f" ] && echo "$f: $(python3 -c "import json;print(len(json.load(open('$META/$f'))))" 2>/dev/null || echo '?') entries"
+  done
+  # Keep the trace next to the binary so later runs can diff/audit it.
+  rm -rf "$OUT/$3-meta" && cp -r "$META" "$OUT/$3-meta"
   "$NI" \
     -J-Xmx12g \
     --no-fallback \

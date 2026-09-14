@@ -76,12 +76,12 @@ jobs:
           R8_VERSION: ${{ inputs.r8_version }}
         run: bash scripts/snapshot.sh
 
-      - name: Upload snapshot binary
+      - name: Upload snapshot binary + trace metadata
         if: steps.gate.outputs.run == 'yes'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.tool }}-snapshot-arm64
-          path: out/${{ matrix.tool }}-snapshot*
+          path: out/
           if-no-files-found: error
           retention-days: 7
 
