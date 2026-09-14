@@ -108,12 +108,14 @@ EOF
     "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.10.2/kotlinx-coroutines-core-jvm-1.10.2.jar" \
     "org/jetbrains/kotlinx/kotlinx-serialization-core-jvm/1.9.0/kotlinx-serialization-core-jvm-1.9.0.jar" \
     "org/jetbrains/kotlinx/kotlinx-serialization-json-jvm/1.9.0/kotlinx-serialization-json-jvm-1.9.0.jar" \
+    "org/jetbrains/compose/runtime/runtime-desktop/1.7.1/runtime-desktop-1.7.1.jar" \
   ; do
     f="$WORK/tracelibs/$(basename "$a")"
     [ -f "$f" ] || curl -sSfL -o "$f" "https://repo1.maven.org/maven2/$a"
     cp="$cp$f:"
   done
   SPLUG="$kdir/lib/kotlin-serialization-compiler-plugin.jar"
+  CPLUG="$kdir/lib/compose-compiler-plugin.jar"
   SAMPLES="$PWD/samples"
   [ -d "$SAMPLES" ] || { echo "samples/ dir missing" >&2; exit 1; }
   KJ="$JAVA_HOME/bin/java $AGENT -cp $cp org.jetbrains.kotlin.cli.jvm.K2JVMCompiler"
@@ -141,6 +143,11 @@ EOF
   rm -rf "$SAMPLE/kt-ser" && mkdir -p "$SAMPLE/kt-ser"
   # shellcheck disable=SC2086
   $KJ -cp "$cp" -Xplugin="$SPLUG" -d "$SAMPLE/kt-ser" "$SAMPLES/serial.kt"
+
+  echo "--- trace: compose plugin ---"
+  rm -rf "$SAMPLE/kt-cmp" && mkdir -p "$SAMPLE/kt-cmp"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -Xplugin="$CPLUG" -d "$SAMPLE/kt-cmp" "$SAMPLES/compose.kt"
 
   echo "--- trace: diagnostics (broken file, message bundles) ---"
   rm -rf "$SAMPLE/kt-err" && mkdir -p "$SAMPLE/kt-err"
@@ -214,6 +221,7 @@ case "$TOOL" in
     trace_kotlinc "$KDIR"
     KCP="$(cat "$WORK/kotlinc-cp.txt")"
     SPLUG="$(cat "$WORK/kotlinc-splug.txt")"
+    CPLUG="$KDIR/lib/compose-compiler-plugin.jar"
     link_snapshot org.jetbrains.kotlin.cli.jvm.K2JVMCompiler "$KCP" kotlinc-snapshot
     echo "--- smoke: version ---"
     # NOTE: -kotlin-home is required on EVERY invocation, including
@@ -234,6 +242,12 @@ case "$TOOL" in
       "$PWD/samples/reflect.kt" "$PWD/samples/serial.kt" \
       "$PWD/samples/warn.kt"
     find "$SAMPLE/kt-smoke" -name "*.class" | head -8
+    echo "--- smoke: compose plugin inside the image ---"
+    rm -rf "$SAMPLE/kt-smoke-cmp" && mkdir -p "$SAMPLE/kt-smoke-cmp"
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+      -Xplugin="$CPLUG" \
+      -d "$SAMPLE/kt-smoke-cmp" "$PWD/samples/compose.kt"
+    find "$SAMPLE/kt-smoke-cmp" -name "*.class" | head -4 && echo "COMPOSE-OK"
     echo "--- smoke: diagnostics still render ---"
     "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
       -d "$SAMPLE/kt-smoke-err" "$PWD/samples/err.kt" 2>&1 \
