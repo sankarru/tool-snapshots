@@ -103,49 +103,28 @@ jobs:
           repository: sankarru/compose-aot
           path: compose-aot
 
-      - name: Setup Temurin JDK 21 for the AGP build
-        # NOT GraalVM: its jlink cannot transform android-35's
-        # core-for-system-modules.jar (JdkImageTransform failure in
-        # compileReleaseJavaWithJavac). The snapshots under test are native
-        # binaries and don't need a JVM at all.
+      - name: Setup JDK 21 (kotlinc compiler runs on any stock JDK)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
+
+      - name: Setup Gradle (dependency resolution only, no build plugins)
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
 
-      - name: Install SDK packages
+      - name: Install SDK platform (android.jar only; no build-tools needed)
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKM" ]; then
             SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
           fi
-          # Platform only: build-tools come from the fixed arm64 SDK below
-          # (stock Google build-tools ship an x86_64-only aapt2 that cannot
-          # start on the arm64 runner).
           "$SDKM" "platforms;android-35"
           echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
-
-      - name: Install fixed arm64 build-tools 37.0.0
-        run: |
-          curl -sSfL -o /tmp/fixed-sdk.tgz \
-            "https://github.com/sankarru/fixed/releases/download/v37.0.0/android-sdk-linux-arm64-complete.tar.gz"
-          mkdir -p /tmp/fixed-sdk-dl "$ANDROID_HOME/build-tools"
-          # tarball root is android-sdk/; merge its build-tools into the SDK.
-          tar -xzf /tmp/fixed-sdk.tgz -C /tmp/fixed-sdk-dl
-          cp -r /tmp/fixed-sdk-dl/android-sdk/build-tools/37.0.0 "$ANDROID_HOME/build-tools/"
-          rm -rf /tmp/fixed-sdk.tgz /tmp/fixed-sdk-dl
-          "$ANDROID_HOME/build-tools/37.0.0/aapt2" version
-          # AGP ignores the SDK folder for AAPT2 and downloads its own
-          # (x86_64-only) copy from Maven -- force the fixed arm64 binary.
-          # Written into the throwaway checkout, not committed anywhere.
-          printf '\nandroid.aapt2FromMavenOverride=%s\n' \
-            "$ANDROID_HOME/build-tools/37.0.0/aapt2" >> compose-aot/gradle.properties
-          tail -2 compose-aot/gradle.properties
 
       - name: Download d8 snapshot
         uses: actions/download-artifact@v4
@@ -159,11 +138,7 @@ jobs:
           name: r8-snapshot-arm64
           path: dist
 
-      - name: Build compose-aot release (JVM R8/D8 baseline)
-        working-directory: compose-aot
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --console=plain --no-daemon
-
-      - name: Smoke snapshots over real Compose bytecode
+      - name: Smoke snapshots over real Compose bytecode (snapshots only)
+        env:
+          KOTLIN_TAG: ${{ inputs.kotlin_version }}
         run: bash tool-snapshots/scripts/smoke-compose.sh
