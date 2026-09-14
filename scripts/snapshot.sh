@@ -116,6 +116,9 @@ EOF
   done
   SPLUG="$kdir/lib/kotlin-serialization-compiler-plugin.jar"
   CPLUG="$kdir/lib/compose-compiler-plugin.jar"
+  PPLUG="$kdir/lib/parcelize-compiler.jar"
+  AOPLUG="$kdir/lib/allopen-compiler-plugin.jar"
+  ANDROID_JAR="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" 2>/dev/null | sort | tail -1 || true)"
   SAMPLES="$PWD/samples"
   [ -d "$SAMPLES" ] || { echo "samples/ dir missing" >&2; exit 1; }
   KJ="$JAVA_HOME/bin/java $AGENT -cp $cp org.jetbrains.kotlin.cli.jvm.K2JVMCompiler"
@@ -148,6 +151,22 @@ EOF
   rm -rf "$SAMPLE/kt-cmp" && mkdir -p "$SAMPLE/kt-cmp"
   # shellcheck disable=SC2086
   $KJ -cp "$cp" -Xplugin="$CPLUG" -d "$SAMPLE/kt-cmp" "$SAMPLES/compose.kt"
+
+  if [ -n "$ANDROID_JAR" ]; then
+    echo "--- trace: parcelize plugin (lib: $ANDROID_JAR) ---"
+    rm -rf "$SAMPLE/kt-par" && mkdir -p "$SAMPLE/kt-par"
+    # shellcheck disable=SC2086
+    $KJ -cp "$cp:$ANDROID_JAR" -Xplugin="$PPLUG" -d "$SAMPLE/kt-par" "$SAMPLES/parcel.kt"
+  else
+    echo "--- trace: parcelize SKIPPED (no android.jar; no ANDROID_HOME) ---"
+  fi
+
+  echo "--- trace: allopen plugin ---"
+  rm -rf "$SAMPLE/kt-ao" && mkdir -p "$SAMPLE/kt-ao"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -Xplugin="$AOPLUG" \
+    -P "plugin:org.jetbrains.kotlin.allopen:preset=spring" \
+    -d "$SAMPLE/kt-ao" "$SAMPLES/allopen.kt"
 
   echo "--- trace: diagnostics (broken file, message bundles) ---"
   rm -rf "$SAMPLE/kt-err" && mkdir -p "$SAMPLE/kt-err"
@@ -222,6 +241,9 @@ case "$TOOL" in
     KCP="$(cat "$WORK/kotlinc-cp.txt")"
     SPLUG="$(cat "$WORK/kotlinc-splug.txt")"
     CPLUG="$KDIR/lib/compose-compiler-plugin.jar"
+    PPLUG="$KDIR/lib/parcelize-compiler-plugin.jar"
+    AOPLUG="$KDIR/lib/allopen-compiler-plugin.jar"
+    ANDROID_JAR="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" 2>/dev/null | sort | tail -1 || true)"
     link_snapshot org.jetbrains.kotlin.cli.jvm.K2JVMCompiler "$KCP" kotlinc-snapshot
     echo "--- smoke: version ---"
     # NOTE: -kotlin-home is required on EVERY invocation, including
@@ -248,6 +270,21 @@ case "$TOOL" in
       -Xplugin="$CPLUG" \
       -d "$SAMPLE/kt-smoke-cmp" "$PWD/samples/compose.kt"
     find "$SAMPLE/kt-smoke-cmp" -name "*.class" | head -4 && echo "COMPOSE-OK"
+    if [ -n "$ANDROID_JAR" ]; then
+      echo "--- smoke: parcelize plugin inside the image ---"
+      rm -rf "$SAMPLE/kt-smoke-par" && mkdir -p "$SAMPLE/kt-smoke-par"
+      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP:$ANDROID_JAR" \
+        -Xplugin="$PPLUG" \
+        -d "$SAMPLE/kt-smoke-par" "$PWD/samples/parcel.kt"
+      find "$SAMPLE/kt-smoke-par" -name "*.class" | head -4 && echo "PARCELIZE-OK"
+    fi
+    echo "--- smoke: allopen plugin inside the image ---"
+    rm -rf "$SAMPLE/kt-smoke-ao" && mkdir -p "$SAMPLE/kt-smoke-ao"
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+      -Xplugin="$AOPLUG" \
+      -P "plugin:org.jetbrains.kotlin.allopen:preset=spring" \
+      -d "$SAMPLE/kt-smoke-ao" "$PWD/samples/allopen.kt"
+    find "$SAMPLE/kt-smoke-ao" -name "*.class" | head -4 && echo "ALLOPEN-OK"
     echo "--- smoke: diagnostics still render ---"
     "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
       -d "$SAMPLE/kt-smoke-err" "$PWD/samples/err.kt" 2>&1 \

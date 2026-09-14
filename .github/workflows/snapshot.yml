@@ -48,7 +48,7 @@ jobs:
           distribution: 'graalvm-community'
 
       - name: Setup Android SDK (D8/R8 tracing needs android.jar)
-        if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
+        if: steps.gate.outputs.run == 'yes'
         uses: android-actions/setup-android@v3
         with:
           # NB: the action's default package list includes the long-removed
@@ -57,7 +57,7 @@ jobs:
           packages: platform-tools
 
       - name: Install SDK platform for tracing
-        if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
+        if: steps.gate.outputs.run == 'yes'
         run: |
           # setup-android does not put sdkmanager on PATH; locate it under
           # ANDROID_HOME (ANDROID_SDK_ROOT is the same dir) defensively.
