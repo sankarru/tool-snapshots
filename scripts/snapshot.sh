@@ -101,24 +101,63 @@ print(f"patched kotlin-compiler.jar in place, dropped {dropped} dangling jline e
 EOF
   local cp
   cp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
-  cat > "$SAMPLE/hello.kt" <<'EOF'
-fun main(args: Array<String>) {
-  println("hello from ${args.firstOrNull() ?: "snapshot"}")
-}
-EOF
+  # Extra compile-only deps for the coverage samples (coroutines + explicit
+  # serialization core; the serialization *plugin* ships in the dist).
+  mkdir -p "$WORK/tracelibs"
+  for a in \
+    "org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.10.2/kotlinx-coroutines-core-jvm-1.10.2.jar" \
+    "org/jetbrains/kotlinx/kotlinx-serialization-core-jvm/1.9.0/kotlinx-serialization-core-jvm-1.9.0.jar" \
+    "org/jetbrains/kotlinx/kotlinx-serialization-json-jvm/1.9.0/kotlinx-serialization-json-jvm-1.9.0.jar" \
+  ; do
+    f="$WORK/tracelibs/$(basename "$a")"
+    [ -f "$f" ] || curl -sSfL -o "$f" "https://repo1.maven.org/maven2/$a"
+    cp="$cp$f:"
+  done
+  SPLUG="$kdir/lib/kotlin-serialization-compiler-plugin.jar"
+  SAMPLES="$PWD/samples"
+  [ -d "$SAMPLES" ] || { echo "samples/ dir missing" >&2; exit 1; }
+  KJ="$JAVA_HOME/bin/java $AGENT -cp $cp org.jetbrains.kotlin.cli.jvm.K2JVMCompiler"
+  # NOTE: the java -cp above loads the COMPILER; the COMPILATION classpath
+  # must be passed explicitly via kotlinc -cp (K2 does not inherit the JVM
+  # classpath, and only the stdlib is auto-found via kotlin-home).
+
+  echo "--- trace: basic + warnings ---"
   rm -rf "$SAMPLE/kt-out" && mkdir -p "$SAMPLE/kt-out"
-  "$JAVA_HOME/bin/java" "$AGENT" -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -d "$SAMPLE/kt-out" "$SAMPLE/hello.kt"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -d "$SAMPLE/kt-out" "$SAMPLES/hello.kt" "$SAMPLES/warn.kt"
   find "$SAMPLE/kt-out" -name "*.class"
-  # A deliberately broken file: exercises the diagnostic/message-bundle
-  # paths so the agent records them too (a clean compile never touches
-  # error rendering, and missing bundles crash the snapshot at runtime).
-  cat > "$SAMPLE/err.kt" <<'EOF'
-val x: Int = "nope"
-EOF
-  "$JAVA_HOME/bin/java" "$AGENT" -cp "$cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -d "$SAMPLE/kt-err" "$SAMPLE/err.kt" || true
+
+  echo "--- trace: language surface (data/sealed/enum/generics/coroutines) ---"
+  rm -rf "$SAMPLE/kt-feat" && mkdir -p "$SAMPLE/kt-feat"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -d "$SAMPLE/kt-feat" "$SAMPLES/features.kt"
+
+  echo "--- trace: kotlin-reflect ---"
+  rm -rf "$SAMPLE/kt-refl" && mkdir -p "$SAMPLE/kt-refl"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -d "$SAMPLE/kt-refl" "$SAMPLES/reflect.kt"
+
+  echo "--- trace: serialization plugin ---"
+  rm -rf "$SAMPLE/kt-ser" && mkdir -p "$SAMPLE/kt-ser"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -Xplugin="$SPLUG" -d "$SAMPLE/kt-ser" "$SAMPLES/serial.kt"
+
+  echo "--- trace: diagnostics (broken file, message bundles) ---"
+  rm -rf "$SAMPLE/kt-err" && mkdir -p "$SAMPLE/kt-err"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -d "$SAMPLE/kt-err" "$SAMPLES/err.kt" || true
+
+  echo "--- trace: script execution ---"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -script "$SAMPLES/script.kts" || true
+
+  echo "--- trace: legacy jvm-target backend ---"
+  rm -rf "$SAMPLE/kt-18" && mkdir -p "$SAMPLE/kt-18"
+  # shellcheck disable=SC2086
+  $KJ -cp "$cp" -jvm-target 1.8 -d "$SAMPLE/kt-18" "$SAMPLES/hello.kt"
+
   echo "$cp" > "$WORK/kotlinc-cp.txt"
+  echo "$SPLUG" > "$WORK/kotlinc-splug.txt"
 }
 
 link_snapshot() {
@@ -174,22 +213,34 @@ case "$TOOL" in
     KDIR="$(fetch_kotlinc)"
     trace_kotlinc "$KDIR"
     KCP="$(cat "$WORK/kotlinc-cp.txt")"
+    SPLUG="$(cat "$WORK/kotlinc-splug.txt")"
     link_snapshot org.jetbrains.kotlin.cli.jvm.K2JVMCompiler "$KCP" kotlinc-snapshot
     echo "--- smoke: version ---"
     # NOTE: -kotlin-home is required on EVERY invocation, including
     # -version: arg setup runs PathUtil discovery before anything else,
     # and discovery cannot work inside an image (no jar file path).
     "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -version
-    echo "--- smoke: compile hello.kt ---"
+    echo "--- smoke: compile full sample surface ---"
     rm -rf "$SAMPLE/kt-smoke" && mkdir -p "$SAMPLE/kt-smoke"
     # -kotlin-home is mandatory: the snapshot cannot discover the dist
     # layout via class-resource lookup (PathUtil.getResourcePathForClass has
     # no file path inside a native image), so point it at the home
     # explicitly. The home's lib/ (stdlib, reflect, plugins) must be present
     # at runtime -- the snapshot replaces only the launcher, not the dist.
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" \
-      -d "$SAMPLE/kt-smoke" "$SAMPLE/hello.kt"
-    find "$SAMPLE/kt-smoke" -name "*.class"
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+      -Xplugin="$SPLUG" \
+      -d "$SAMPLE/kt-smoke" \
+      "$PWD/samples/hello.kt" "$PWD/samples/features.kt" \
+      "$PWD/samples/reflect.kt" "$PWD/samples/serial.kt" \
+      "$PWD/samples/warn.kt"
+    find "$SAMPLE/kt-smoke" -name "*.class" | head -8
+    echo "--- smoke: diagnostics still render ---"
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+      -d "$SAMPLE/kt-smoke-err" "$PWD/samples/err.kt" 2>&1 \
+      | grep -m1 "error:" && echo "DIAG-OK"
+    echo "--- smoke: script execution ---"
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+      -script "$PWD/samples/script.kts" | grep -m1 "script says 42" && echo "SCRIPT-OK"
     ;;
   *)
     echo "unknown TOOL=$TOOL" >&2
