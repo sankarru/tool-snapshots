@@ -176,7 +176,10 @@ case "$TOOL" in
     KCP="$(cat "$WORK/kotlinc-cp.txt")"
     link_snapshot org.jetbrains.kotlin.cli.jvm.K2JVMCompiler "$KCP" kotlinc-snapshot
     echo "--- smoke: version ---"
-    "$OUT/kotlinc-snapshot" -version
+    # NOTE: -kotlin-home is required on EVERY invocation, including
+    # -version: arg setup runs PathUtil discovery before anything else,
+    # and discovery cannot work inside an image (no jar file path).
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -version
     echo "--- smoke: compile hello.kt ---"
     rm -rf "$SAMPLE/kt-smoke" && mkdir -p "$SAMPLE/kt-smoke"
     # -kotlin-home is mandatory: the snapshot cannot discover the dist
