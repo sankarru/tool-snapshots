@@ -1,6 +1,16 @@
 work-*/
 out/
+dist/
+dist-*/
 *.zip
 r8/
 kotlinc-dist/
 graalvm-*/
+compose-aot
+smoke/fetch-deps/.gradle/
+smoke/fetch-deps/build/
+smoke/kotlinc/
+smoke/cp/
+smoke/classes/
+smoke/d8-out/
+smoke/*.zip
