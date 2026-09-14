@@ -29,3 +29,31 @@ Artifacts: `<tool>-snapshot-<arch>` binaries (7-day retention).
 Start with `d8,r8` (smallest closed-world surface). `kotlinc` is included
 but expected to need metadata iterations — the compiler leans on services,
 message bundles and plugins that only show up when exercised.
+
+## Local use (arm64 Linux, no limitations)
+
+The snapshot binaries are self-contained: no GraalVM, no wrapper, no
+hardcoded paths on the using machine. Install the latest green build:
+
+```sh
+bash scripts/install-local.sh
+# RUN_ID=34896218148 PREFIX=~/bin bash scripts/install-local.sh
+```
+
+This puts `d8-snapshot` / `r8-snapshot` on your `PATH`, prints their
+versions, and dexes a hello-world jar end to end. Afterwards use them
+exactly like the JVM tools, pointing `--lib` at your own SDK:
+
+```sh
+export ANDROID_HOME=$HOME/Android/Sdk
+d8-snapshot --lib $ANDROID_HOME/platforms/android-35/android.jar \
+  --min-api 24 --output dex-out app.jar
+r8-snapshot --lib $ANDROID_HOME/platforms/android-35/android.jar \
+  --min-api 24 --pg-conf rules.pro --output shrunk.zip app.jar
+```
+
+Reflection/JNI/resources used during the traced runs are baked in (see the
+`*-meta` folders uploaded next to each binary). If a snapshot ever fails
+on a new input where the JVM tool succeeds, that input exercises untraced
+code — extend the tracing workload in `scripts/snapshot.sh`, not local
+config: there is deliberately nothing to configure locally.
