@@ -56,10 +56,23 @@ jobs:
       - name: Setup Android SDK (D8/R8 tracing needs android.jar)
         if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
         uses: android-actions/setup-android@v3
+        with:
+          # NB: the action's default package list includes the long-removed
+          # "tools" package, which makes sdkmanager exit 1. List only what
+          # exists; the platform install below uses sdkmanager directly.
+          packages: platform-tools
 
       - name: Install SDK platform for tracing
         if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
-        run: sdkmanager "platforms;android-35"
+        run: |
+          # setup-android does not put sdkmanager on PATH; locate it under
+          # ANDROID_HOME (ANDROID_SDK_ROOT is the same dir) defensively.
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            SDKM="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*cmdline-tools*/bin/sdkmanager" 2>/dev/null | head -1)"
+          fi
+          echo "sdkmanager: $SDKM"
+          "$SDKM" "platforms;android-35"
 
       - name: Trace + link + smoke-test
         if: steps.gate.outputs.run == 'yes'
