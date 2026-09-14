@@ -120,8 +120,22 @@ jobs:
           if [ ! -x "$SDKM" ]; then
             SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
           fi
-          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
+          # Platform only: build-tools come from the fixed arm64 SDK below
+          # (stock Google build-tools ship an x86_64-only aapt2 that cannot
+          # start on the arm64 runner).
+          "$SDKM" "platforms;android-35"
           echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
+
+      - name: Install fixed arm64 build-tools 37.0.0
+        run: |
+          curl -sSfL -o /tmp/fixed-sdk.tgz \
+            "https://github.com/sankarru/fixed/releases/download/v37.0.0/android-sdk-linux-arm64-complete.tar.gz"
+          mkdir -p /tmp/fixed-sdk-dl "$ANDROID_HOME/build-tools"
+          # tarball root is android-sdk/; merge its build-tools into the SDK.
+          tar -xzf /tmp/fixed-sdk.tgz -C /tmp/fixed-sdk-dl
+          cp -r /tmp/fixed-sdk-dl/android-sdk/build-tools/37.0.0 "$ANDROID_HOME/build-tools/"
+          rm -rf /tmp/fixed-sdk.tgz /tmp/fixed-sdk-dl
+          "$ANDROID_HOME/build-tools/37.0.0/aapt2" version
 
       - name: Download d8 snapshot
         uses: actions/download-artifact@v4
