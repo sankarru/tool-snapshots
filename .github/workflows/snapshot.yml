@@ -103,11 +103,15 @@ jobs:
           repository: sankarru/compose-aot
           path: compose-aot
 
-      - name: Setup GraalVM JDK 21
-        uses: graalvm/setup-graalvm@v1
+      - name: Setup Temurin JDK 21 for the AGP build
+        # NOT GraalVM: its jlink cannot transform android-35's
+        # core-for-system-modules.jar (JdkImageTransform failure in
+        # compileReleaseJavaWithJavac). The snapshots under test are native
+        # binaries and don't need a JVM at all.
+        uses: actions/setup-java@v4
         with:
+          distribution: 'temurin'
           java-version: '21'
-          distribution: 'graalvm-community'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
