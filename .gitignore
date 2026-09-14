@@ -1,0 +1,6 @@
+work-*/
+out/
+*.zip
+r8/
+kotlinc-dist/
+graalvm-*/

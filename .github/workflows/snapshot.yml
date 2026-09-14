@@ -1,0 +1,79 @@
+name: tool-snapshots (GraalVM native-image of kotlinc/R8/D8)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: 'Tools to snapshot (comma: d8,r8,kotlinc)'
+        required: true
+        default: 'd8,r8'
+      arch:
+        description: 'Architectures (comma: x64,arm64)'
+        required: true
+        default: 'x64,arm64'
+      kotlin_version:
+        description: 'Kotlin release tag (e.g. v2.2.20)'
+        required: true
+        default: 'v2.2.20'
+      r8_version:
+        description: 'R8 version from Google Maven (e.g. 8.13.23)'
+        required: true
+        default: '8.13.23'
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: snapshot ${{ matrix.tool }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [d8, r8, kotlinc]
+        arch: [x64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Filter by inputs
+        id: gate
+        run: |
+          if [[ ",${{ inputs.tools }}," == *",${{ matrix.tool }},"* ]] && \
+             [[ ",${{ inputs.arch }}," == *",${{ matrix.arch }},"* ]]; then
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup GraalVM JDK 21
+        if: steps.gate.outputs.run == 'yes'
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm-community'
+
+      - name: Setup Android SDK (D8/R8 tracing needs android.jar)
+        if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform for tracing
+        if: steps.gate.outputs.run == 'yes' && matrix.tool != 'kotlinc'
+        run: sdkmanager "platforms;android-35"
+
+      - name: Trace + link + smoke-test
+        if: steps.gate.outputs.run == 'yes'
+        env:
+          TOOL: ${{ matrix.tool }}
+          KOTLIN_TAG: ${{ inputs.kotlin_version }}
+          R8_VERSION: ${{ inputs.r8_version }}
+        run: bash scripts/snapshot.sh
+
+      - name: Upload snapshot binary
+        if: steps.gate.outputs.run == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.tool }}-snapshot-${{ matrix.arch }}
+          path: out/${{ matrix.tool }}-snapshot*
+          if-no-files-found: error
+          retention-days: 7
