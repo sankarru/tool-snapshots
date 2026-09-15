@@ -103,8 +103,8 @@ EOF
   # getResourceRoot returns null (class files not available as resources
   # inside the image). Without this, every kotlinc invocation in the
   # image throws IllegalStateException at KotlinCoreEnvironment startup.
-  ASM_CP=$(find "$HOME/.gradle" /usr/share/gradle /opt -name "asm-*.jar" 2>/dev/null | tr '\n' ':')
-  echo "ASM_CP found: $(echo "$ASM_CP" | tr ':' '\n' | head -3 | tr '\n' ' ')"
+  ASM_CP=$(find "$HOME/.gradle" /usr/share/gradle /opt -name "asm-*.jar" 2>/dev/null | tr '\n' ':' || true)
+  echo "ASM_CP found: $(echo "$ASM_CP" | tr ':' '\n' | head -3 | tr '\n' ' ' || true)"
   if [ -z "$ASM_CP" ] || [ "$ASM_CP" = ":" ]; then
     echo "ASM not found, downloading"
     mkdir -p "$WORK/asm"
