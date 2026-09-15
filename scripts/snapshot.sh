@@ -240,7 +240,7 @@ trace_room() { # $1 = kotlinc dist dir
     -resource-output-dir "$WORK/ksp-out/res" \
     -language-version=2.2 -api-version=2.2 \
     "$proc_cp"
-  find "$WORK/ksp-out/kotlin" "$WORK/ksp-out/java" -type f | head
+  find "$WORK/ksp-out/kotlin" "$WORK/ksp-out/java" -type f 2>/dev/null | head || true
   rm -rf "$OUT/ksp-trace-meta" && cp -r "$WORK/ksp-meta" "$OUT/ksp-trace-meta"
 
   echo "--- trace: kotlinc compiles Room sources + generated impls ---"
