@@ -129,34 +129,34 @@ EOF
   echo "--- trace: basic + warnings ---"
   rm -rf "$SAMPLE/kt-out" && mkdir -p "$SAMPLE/kt-out"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -d "$SAMPLE/kt-out" "$SAMPLES/hello.kt" "$SAMPLES/warn.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -d "$SAMPLE/kt-out" "$SAMPLES/hello.kt" "$SAMPLES/warn.kt"
   find "$SAMPLE/kt-out" -name "*.class"
 
   echo "--- trace: language surface (data/sealed/enum/generics/coroutines) ---"
   rm -rf "$SAMPLE/kt-feat" && mkdir -p "$SAMPLE/kt-feat"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -d "$SAMPLE/kt-feat" "$SAMPLES/features.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -d "$SAMPLE/kt-feat" "$SAMPLES/features.kt"
 
   echo "--- trace: kotlin-reflect ---"
   rm -rf "$SAMPLE/kt-refl" && mkdir -p "$SAMPLE/kt-refl"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -d "$SAMPLE/kt-refl" "$SAMPLES/reflect.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -d "$SAMPLE/kt-refl" "$SAMPLES/reflect.kt"
 
   echo "--- trace: serialization plugin ---"
   rm -rf "$SAMPLE/kt-ser" && mkdir -p "$SAMPLE/kt-ser"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -Xplugin="$SPLUG" -d "$SAMPLE/kt-ser" "$SAMPLES/serial.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -Xplugin="$SPLUG" -d "$SAMPLE/kt-ser" "$SAMPLES/serial.kt"
 
   echo "--- trace: compose plugin ---"
   rm -rf "$SAMPLE/kt-cmp" && mkdir -p "$SAMPLE/kt-cmp"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -Xplugin="$CPLUG" -d "$SAMPLE/kt-cmp" "$SAMPLES/compose.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -Xplugin="$CPLUG" -d "$SAMPLE/kt-cmp" "$SAMPLES/compose.kt"
 
   if [ -n "$ANDROID_JAR" ]; then
     echo "--- trace: parcelize plugin (lib: $ANDROID_JAR) ---"
     rm -rf "$SAMPLE/kt-par" && mkdir -p "$SAMPLE/kt-par"
     # shellcheck disable=SC2086
-    $KJ -cp "$cp:$ANDROID_JAR" -Xplugin="$PPLUG" -d "$SAMPLE/kt-par" "$SAMPLES/parcel.kt"
+    $KJ -jdk-home "$JAVA_HOME" -cp "$cp:$ANDROID_JAR" -Xplugin="$PPLUG" -d "$SAMPLE/kt-par" "$SAMPLES/parcel.kt"
   else
     echo "--- trace: parcelize SKIPPED (no android.jar; no ANDROID_HOME) ---"
   fi
@@ -164,23 +164,23 @@ EOF
   echo "--- trace: allopen plugin ---"
   rm -rf "$SAMPLE/kt-ao" && mkdir -p "$SAMPLE/kt-ao"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -Xplugin="$AOPLUG" \
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -Xplugin="$AOPLUG" \
     -P "plugin:org.jetbrains.kotlin.allopen:preset=spring" \
     -d "$SAMPLE/kt-ao" "$SAMPLES/allopen.kt"
 
   echo "--- trace: diagnostics (broken file, message bundles) ---"
   rm -rf "$SAMPLE/kt-err" && mkdir -p "$SAMPLE/kt-err"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -d "$SAMPLE/kt-err" "$SAMPLES/err.kt" || true
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -d "$SAMPLE/kt-err" "$SAMPLES/err.kt" || true
 
   echo "--- trace: script execution ---"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -script "$SAMPLES/script.kts" || true
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -script "$SAMPLES/script.kts" || true
 
   echo "--- trace: legacy jvm-target backend ---"
   rm -rf "$SAMPLE/kt-18" && mkdir -p "$SAMPLE/kt-18"
   # shellcheck disable=SC2086
-  $KJ -cp "$cp" -jvm-target 1.8 -d "$SAMPLE/kt-18" "$SAMPLES/hello.kt"
+  $KJ -jdk-home "$JAVA_HOME" -cp "$cp" -jvm-target 1.8 -d "$SAMPLE/kt-18" "$SAMPLES/hello.kt"
 
   echo "$cp" > "$WORK/kotlinc-cp.txt"
   echo "$SPLUG" > "$WORK/kotlinc-splug.txt"
@@ -249,7 +249,7 @@ trace_room() { # $1 = kotlinc dist dir
   kcp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
   # shellcheck disable=SC2086
   "$JAVA_HOME/bin/java" "$AGENT" -cp "$kcp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -cp "$cmp_cp$ANDROID_JAR" -d "$SAMPLE/kt-room" \
+    -jdk-home "$JAVA_HOME" -cp "$cmp_cp$ANDROID_JAR" -d "$SAMPLE/kt-room" \
     "$WORK/room-src/room.kt" "$WORK/ksp-out/kotlin/"*.kt
   find "$SAMPLE/kt-room" -name "*Db_Impl*" -o -name "*Dao_Impl*" | head -4
 }
@@ -318,7 +318,7 @@ case "$TOOL" in
     # NOTE: -kotlin-home is required on EVERY invocation, including
     # -version: arg setup runs PathUtil discovery before anything else,
     # and discovery cannot work inside an image (no jar file path).
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -version
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -version
     echo "--- smoke: compile full sample surface ---"
     rm -rf "$SAMPLE/kt-smoke" && mkdir -p "$SAMPLE/kt-smoke"
     # -kotlin-home is mandatory: the snapshot cannot discover the dist
@@ -326,7 +326,7 @@ case "$TOOL" in
     # no file path inside a native image), so point it at the home
     # explicitly. The home's lib/ (stdlib, reflect, plugins) must be present
     # at runtime -- the snapshot replaces only the launcher, not the dist.
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP" \
       -Xplugin="$SPLUG" \
       -d "$SAMPLE/kt-smoke" \
       "$PWD/samples/hello.kt" "$PWD/samples/features.kt" \
@@ -335,38 +335,38 @@ case "$TOOL" in
     find "$SAMPLE/kt-smoke" -name "*.class" | head -8
     echo "--- smoke: compose plugin inside the image ---"
     rm -rf "$SAMPLE/kt-smoke-cmp" && mkdir -p "$SAMPLE/kt-smoke-cmp"
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP" \
       -Xplugin="$CPLUG" \
       -d "$SAMPLE/kt-smoke-cmp" "$PWD/samples/compose.kt"
     find "$SAMPLE/kt-smoke-cmp" -name "*.class" | head -4 && echo "COMPOSE-OK"
     if [ -n "$ANDROID_JAR" ]; then
       echo "--- smoke: parcelize plugin inside the image ---"
       rm -rf "$SAMPLE/kt-smoke-par" && mkdir -p "$SAMPLE/kt-smoke-par"
-      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP:$ANDROID_JAR" \
+      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP:$ANDROID_JAR" \
         -Xplugin="$PPLUG" \
         -d "$SAMPLE/kt-smoke-par" "$PWD/samples/parcel.kt"
       find "$SAMPLE/kt-smoke-par" -name "*.class" | head -4 && echo "PARCELIZE-OK"
     fi
     echo "--- smoke: allopen plugin inside the image ---"
     rm -rf "$SAMPLE/kt-smoke-ao" && mkdir -p "$SAMPLE/kt-smoke-ao"
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP" \
       -Xplugin="$AOPLUG" \
       -P "plugin:org.jetbrains.kotlin.allopen:preset=spring" \
       -d "$SAMPLE/kt-smoke-ao" "$PWD/samples/allopen.kt"
     find "$SAMPLE/kt-smoke-ao" -name "*.class" | head -4 && echo "ALLOPEN-OK"
     echo "--- smoke: diagnostics still render ---"
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP" \
       -d "$SAMPLE/kt-smoke-err" "$PWD/samples/err.kt" 2>&1 \
       | grep -m1 "error:" && echo "DIAG-OK"
     echo "--- smoke: script execution ---"
-    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$KCP" \
+    "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$KCP" \
       -script "$PWD/samples/script.kts" | grep -m1 "script says 42" && echo "SCRIPT-OK"
     if [ -d "$WORK/ksp-out/kotlin" ]; then
       echo "--- smoke: Room sources + generated impls inside the image ---"
       RCP="$(cat "$WORK/room-compile-cp.txt")"
       AJAR="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" 2>/dev/null | sort | tail -1)"
       rm -rf "$SAMPLE/kt-smoke-room" && mkdir -p "$SAMPLE/kt-smoke-room"
-      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -cp "$RCP$AJAR" \
+      "$OUT/kotlinc-snapshot" -kotlin-home "$KDIR" -jdk-home "$JAVA_HOME" -cp "$RCP$AJAR" \
         -d "$SAMPLE/kt-smoke-room" \
         "$WORK/room-src/room.kt" "$WORK/ksp-out/kotlin/"*.kt
       find "$SAMPLE/kt-smoke-room" -name "*Db_Impl*" | head -2 && echo "ROOM-OK"
