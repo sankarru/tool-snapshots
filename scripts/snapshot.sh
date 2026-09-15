@@ -115,6 +115,14 @@ EOF
   fi
   "$JAVA_HOME/bin/javac" -cp "$ASM_CP" scripts/Patch.java -d "$WORK"
   "$JAVA_HOME/bin/java" -cp "$WORK:$ASM_CP" Patch "$kdir/lib/kotlin-compiler.jar"
+  for jar in "$kdir"/lib/*.jar; do
+    if unzip -l "$jar" 2>/dev/null | grep -q "JvmScriptingHostConfigurationKt.class"; then
+      if [ "$jar" != "$kdir/lib/kotlin-compiler.jar" ]; then
+        echo "patching $jar for JvmScripting"
+        "$JAVA_HOME/bin/java" -cp "$WORK:$ASM_CP" Patch "$jar"
+      fi
+    fi
+  done
   local cp
   cp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
   # Extra compile-only deps for the coverage samples (coroutines + explicit

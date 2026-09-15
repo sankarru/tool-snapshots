@@ -18,7 +18,8 @@ public class Patch {
    final boolean isPathUtil = entryName.equals("org/jetbrains/kotlin/utils/PathUtil.class");
    final boolean isCompanion = entryName.equals("org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment$Companion.class");
    final boolean isCoreEnv = entryName.equals("com/intellij/core/CoreApplicationEnvironment.class");
-   if (isPathUtil || isCompanion || isCoreEnv) {
+   final boolean isJvmScripting = entryName.equals("kotlin/script/experimental/jvm/JvmScriptingHostConfigurationKt.class");
+   if (isPathUtil || isCompanion || isCoreEnv || isJvmScripting) {
     System.out.println("patching " + entryName);
     ClassReader cr = new ClassReader(data);
     ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
@@ -26,9 +27,34 @@ public class Patch {
       try { return super.getCommonSuperClass(t1, t2); } catch (Exception ex) { return "java/lang/Object"; }
      }
     };
-    ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
-     @Override public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
-      if (isPathUtil && name.equals("getResourcePathForClass") && desc.equals("(Ljava/lang/Class;)Ljava/io/File;")) {
+     ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
+      @Override public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
+       if (isJvmScripting && name.equals("<clinit>") && desc.equals("()V")) {
+        System.out.println("patching JvmScriptingHostConfigurationKt clinit for java.home null");
+        MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
+        return new MethodVisitor(Opcodes.ASM9, mv) {
+         boolean seenLdcJavaHome = false;
+         @Override public void visitLdcInsn(Object value) {
+          if ("java.home".equals(value)) seenLdcJavaHome = true;
+          super.visitLdcInsn(value);
+         }
+         @Override public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean itf) {
+          if (seenLdcJavaHome && owner.equals("java/lang/System") && name.equals("getProperty") && desc.equals("(Ljava/lang/String;)Ljava/lang/String;")) {
+           super.visitMethodInsn(opcode, owner, name, desc, itf);
+           super.visitInsn(Opcodes.DUP);
+           Label notNull = new Label();
+           super.visitJumpInsn(Opcodes.IFNONNULL, notNull);
+           super.visitInsn(Opcodes.POP);
+           super.visitLdcInsn("");
+           super.visitLabel(notNull);
+           seenLdcJavaHome = false;
+           return;
+          }
+          super.visitMethodInsn(opcode, owner, name, desc, itf);
+         }
+        };
+       }
+       if (isPathUtil && name.equals("getResourcePathForClass") && desc.equals("(Ljava/lang/Class;)Ljava/io/File;")) {
        System.out.println("found PathUtil method, replacing");
        MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
        mv.visitCode();
