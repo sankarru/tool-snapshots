@@ -20,7 +20,11 @@ public class Patch {
    if (isPathUtil || isCompanion) {
     System.out.println("patching " + entryName);
     ClassReader cr = new ClassReader(data);
-    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
+     @Override protected String getCommonSuperClass(String t1, String t2) {
+      try { return super.getCommonSuperClass(t1, t2); } catch (Exception ex) { return "java/lang/Object"; }
+     }
+    };
     ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
      @Override public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
       if (isPathUtil && name.equals("getResourcePathForClass") && desc.equals("(Ljava/lang/Class;)Ljava/io/File;")) {
