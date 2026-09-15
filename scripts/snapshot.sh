@@ -99,6 +99,13 @@ zin.close(); zout.close()
 os.replace(tmp, src)
 print(f"patched kotlin-compiler.jar in place, dropped {dropped} dangling jline entries")
 EOF
+  # Patch PathUtil for native-image: fallback to kotlin.home when
+  # getResourceRoot returns null (class files not available as resources
+  # inside the image). Without this, every kotlinc invocation in the
+  # image throws IllegalStateException at KotlinCoreEnvironment startup.
+  ASM_CP=$(find "$HOME/.gradle" /usr/share/gradle -name "asm-*.jar" 2>/dev/null | tr '\n' ':')
+  javac -cp "$ASM_CP" scripts/Patch.java -d "$WORK" 2>&1 | head -5
+  java -cp "$WORK:$ASM_CP" Patch "$kdir/lib/kotlin-compiler.jar" 2>&1 | head -5
   local cp
   cp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
   # Extra compile-only deps for the coverage samples (coroutines + explicit
