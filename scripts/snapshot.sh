@@ -270,11 +270,10 @@ link_snapshot() {
   # touches dozens of them. Include the compiler's resources wholesale so
   # those lookups succeed inside the image; size cost is negligible vs the
   # already-165 MB binary.
-  local extra_args=""
+  local extra_args=()
   if [ "$3" = "kotlinc-snapshot" ]; then
-    extra_args="-H:IncludeResources=org/jetbrains/kotlin/.*|META-INF/.*"
+    extra_args+=("-H:IncludeResources=org/jetbrains/kotlin/.*|META-INF/.*")
   fi
-  # shellcheck disable=SC2086
   "$NI" \
     -J-Xmx12g \
     --no-fallback \
@@ -282,7 +281,7 @@ link_snapshot() {
     -H:ConfigurationFileDirectories="$META" \
     -H:Name="$OUT/$3" \
     -H:+ReportExceptionStackTraces \
-    $extra_args \
+    "${extra_args[@]}" \
     -cp "$2" "$1"
   ls -la "$OUT/$3"
 }
