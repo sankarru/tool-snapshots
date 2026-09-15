@@ -1,5 +1,4 @@
 import org.objectweb.asm.*;
-import org.objectweb.asm.tree.*;
 import java.io.*;
 import java.nio.file.*;
 import java.util.zip.*;
@@ -11,24 +10,26 @@ public class Patch {
   ZipFile zin = new ZipFile(src);
   ZipOutputStream zout = new ZipOutputStream(new FileOutputStream(dst));
   byte[] patched = null;
+  String patchedEntry = null;
   for (var e : java.util.Collections.list(zin.entries())) {
    InputStream in = zin.getInputStream(e);
    byte[] data = in.readAllBytes();
-   if (e.getName().equals("org/jetbrains/kotlin/utils/PathUtil.class")) {
-    System.out.println("patching PathUtil");
+   String entryName = e.getName();
+   boolean isPathUtil = entryName.equals("org/jetbrains/kotlin/utils/PathUtil.class");
+   boolean isCompanion = entryName.equals("org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment$Companion.class");
+   if (isPathUtil || isCompanion) {
+    System.out.println("patching " + entryName);
     ClassReader cr = new ClassReader(data);
-    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
     ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
      @Override public MethodVisitor visitMethod(int access, String name, String desc, String sig, String[] ex) {
-      if (name.equals("getResourcePathForClass") && desc.equals("(Ljava/lang/Class;)Ljava/io/File;")) {
-       System.out.println("found method, replacing");
+      if (isPathUtil && name.equals("getResourcePathForClass") && desc.equals("(Ljava/lang/Class;)Ljava/io/File;")) {
+       System.out.println("found PathUtil method, replacing");
        MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
        mv.visitCode();
-       // if (aClass == null) checkNotNullParameter
        mv.visitVarInsn(Opcodes.ALOAD, 0);
        mv.visitLdcInsn("aClass");
        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "kotlin/jvm/internal/Intrinsics", "checkNotNullParameter", "(Ljava/lang/Object;Ljava/lang/String;)V", false);
-       // String path = "/" + aClass.getName().replace('.', '/') + ".class"
        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
        mv.visitInsn(Opcodes.DUP);
        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
@@ -47,7 +48,6 @@ public class Patch {
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
        mv.visitVarInsn(Opcodes.ASTORE, 1);
-       // String root = PathManager.getResourceRoot(aClass, path)
        mv.visitVarInsn(Opcodes.ALOAD, 0);
        mv.visitVarInsn(Opcodes.ALOAD, 1);
        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/intellij/openapi/application/PathManager", "getResourceRoot", "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/String;", false);
@@ -55,7 +55,6 @@ public class Patch {
        mv.visitVarInsn(Opcodes.ALOAD, 2);
        Label notNull = new Label();
        mv.visitJumpInsn(Opcodes.IFNONNULL, notNull);
-       // fallback: String kh = System.getProperty("kotlin.home")
        mv.visitLdcInsn("kotlin.home");
        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;", false);
        mv.visitVarInsn(Opcodes.ASTORE, 3);
@@ -65,7 +64,6 @@ public class Patch {
        mv.visitVarInsn(Opcodes.ALOAD, 3);
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "isEmpty", "()Z", false);
        mv.visitJumpInsn(Opcodes.IFNE, khNotNull);
-       // return new File(kh + "/lib/kotlin-compiler.jar").getAbsoluteFile()
        mv.visitTypeInsn(Opcodes.NEW, "java/io/File");
        mv.visitInsn(Opcodes.DUP);
        mv.visitVarInsn(Opcodes.ALOAD, 3);
@@ -75,7 +73,6 @@ public class Patch {
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/File", "getAbsoluteFile", "()Ljava/io/File;", false);
        mv.visitInsn(Opcodes.ARETURN);
        mv.visitLabel(khNotNull);
-       // try java.home
        mv.visitLdcInsn("java.home");
        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;", false);
        mv.visitVarInsn(Opcodes.ASTORE, 4);
@@ -89,7 +86,6 @@ public class Patch {
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/File", "getAbsoluteFile", "()Ljava/io/File;", false);
        mv.visitInsn(Opcodes.ARETURN);
        mv.visitLabel(jhNotNull);
-       // return new File("").getAbsoluteFile()
        mv.visitTypeInsn(Opcodes.NEW, "java/io/File");
        mv.visitInsn(Opcodes.DUP);
        mv.visitLdcInsn("");
@@ -97,7 +93,6 @@ public class Patch {
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/File", "getAbsoluteFile", "()Ljava/io/File;", false);
        mv.visitInsn(Opcodes.ARETURN);
        mv.visitLabel(notNull);
-       // original success path: new File(root).getAbsoluteFile()
        mv.visitTypeInsn(Opcodes.NEW, "java/io/File");
        mv.visitInsn(Opcodes.DUP);
        mv.visitVarInsn(Opcodes.ALOAD, 2);
@@ -108,19 +103,31 @@ public class Patch {
        mv.visitEnd();
        return null;
       }
+      if (isCompanion && name.equals("registerApplicationExtensionPointsAndExtensionsFrom$hasConfigFile") && desc.equals("(Ljava/io/File;Ljava/lang/String;)Z")) {
+       System.out.println("patching hasConfigFile to always true");
+       MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
+       mv.visitCode();
+       mv.visitInsn(Opcodes.ICONST_1);
+       mv.visitInsn(Opcodes.IRETURN);
+       mv.visitMaxs(1,2);
+       mv.visitEnd();
+       return null;
+      }
       return super.visitMethod(access, name, desc, sig, ex);
      }
     };
     cr.accept(cv, 0);
     patched = cw.toByteArray();
-    System.out.println("patched size " + patched.length);
+    patchedEntry = entryName;
+    System.out.println("patched size " + patched.length + " for " + entryName);
    }
    ZipEntry ne = new ZipEntry(e.getName());
    ne.setTime(e.getTime());
    zout.putNextEntry(ne);
-   if (patched != null && e.getName().equals("org/jetbrains/kotlin/utils/PathUtil.class")) {
+   if (patched != null && e.getName().equals(patchedEntry)) {
     zout.write(patched);
     patched = null;
+    patchedEntry = null;
    } else {
     zout.write(data);
    }
