@@ -288,7 +288,7 @@ link_snapshot() {
   # already-165 MB binary.
   local extra_args=()
   if [ "$3" = "kotlinc-snapshot" ]; then
-    extra_args+=("-H:IncludeResources=org/jetbrains/kotlin/.*|META-INF/.*")
+    extra_args+=("-H:IncludeResources=.*")
   fi
   "$NI" \
     -J-Xmx12g \
