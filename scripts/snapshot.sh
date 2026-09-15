@@ -103,9 +103,18 @@ EOF
   # getResourceRoot returns null (class files not available as resources
   # inside the image). Without this, every kotlinc invocation in the
   # image throws IllegalStateException at KotlinCoreEnvironment startup.
-  ASM_CP=$(find "$HOME/.gradle" /usr/share/gradle -name "asm-*.jar" 2>/dev/null | tr '\n' ':')
-  javac -cp "$ASM_CP" scripts/Patch.java -d "$WORK" 2>&1 | head -5
-  java -cp "$WORK:$ASM_CP" Patch "$kdir/lib/kotlin-compiler.jar" 2>&1 | head -5
+  ASM_CP=$(find "$HOME/.gradle" /usr/share/gradle /opt -name "asm-*.jar" 2>/dev/null | tr '\n' ':')
+  echo "ASM_CP found: $(echo "$ASM_CP" | tr ':' '\n' | head -3 | tr '\n' ' ')"
+  if [ -z "$ASM_CP" ] || [ "$ASM_CP" = ":" ]; then
+    echo "ASM not found, downloading"
+    mkdir -p "$WORK/asm"
+    curl -sSfL -o "$WORK/asm/asm-9.7.jar" https://repo1.maven.org/maven2/org/ow2/asm/asm/9.7/asm-9.7.jar
+    curl -sSfL -o "$WORK/asm/asm-tree-9.7.jar" https://repo1.maven.org/maven2/org/ow2/asm/asm-tree/9.7/asm-tree-9.7.jar
+    curl -sSfL -o "$WORK/asm/asm-commons-9.7.jar" https://repo1.maven.org/maven2/org/ow2/asm/asm-commons/9.7/asm-commons-9.7.jar
+    ASM_CP="$WORK/asm/asm-9.7.jar:$WORK/asm/asm-tree-9.7.jar:$WORK/asm/asm-commons-9.7.jar:"
+  fi
+  "$JAVA_HOME/bin/javac" -cp "$ASM_CP" scripts/Patch.java -d "$WORK"
+  "$JAVA_HOME/bin/java" -cp "$WORK:$ASM_CP" Patch "$kdir/lib/kotlin-compiler.jar"
   local cp
   cp=$(ls "$kdir"/lib/*.jar | grep -v -e sources -e android-extensions | tr '\n' ':')
   # Extra compile-only deps for the coverage samples (coroutines + explicit
