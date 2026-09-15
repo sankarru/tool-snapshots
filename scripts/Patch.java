@@ -14,10 +14,11 @@ public class Patch {
   for (var e : java.util.Collections.list(zin.entries())) {
    InputStream in = zin.getInputStream(e);
    byte[] data = in.readAllBytes();
-   String entryName = e.getName();
-   boolean isPathUtil = entryName.equals("org/jetbrains/kotlin/utils/PathUtil.class");
-   boolean isCompanion = entryName.equals("org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment$Companion.class");
-   if (isPathUtil || isCompanion) {
+   final String entryName = e.getName();
+   final boolean isPathUtil = entryName.equals("org/jetbrains/kotlin/utils/PathUtil.class");
+   final boolean isCompanion = entryName.equals("org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment$Companion.class");
+   final boolean isCoreEnv = entryName.equals("com/intellij/core/CoreApplicationEnvironment.class");
+   if (isPathUtil || isCompanion || isCoreEnv) {
     System.out.println("patching " + entryName);
     ClassReader cr = new ClassReader(data);
     ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
@@ -107,13 +108,50 @@ public class Patch {
        mv.visitEnd();
        return null;
       }
-      if (isCompanion && name.equals("registerApplicationExtensionPointsAndExtensionsFrom$hasConfigFile") && desc.equals("(Ljava/io/File;Ljava/lang/String;)Z")) {
-       System.out.println("patching hasConfigFile to always true");
+      if (isCoreEnv && name.equals("registerExtensionPointAndExtensions") && desc.equals("(Ljava/nio/file/Path;Ljava/lang/String;Lcom/intellij/openapi/extensions/ExtensionsArea;)V")) {
+       System.out.println("patching CoreApplicationEnvironment.registerExtensionPointAndExtensions to no-op (extensions already in image via IncludeResources)");
        MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
        mv.visitCode();
+       mv.visitInsn(Opcodes.RETURN);
+       mv.visitMaxs(0,3);
+       mv.visitEnd();
+       return null;
+      }
+      if (isCompanion && name.equals("registerApplicationExtensionPointsAndExtensionsFrom$hasConfigFile") && desc.equals("(Ljava/io/File;Ljava/lang/String;)Z")) {
+       System.out.println("patching hasConfigFile to check via ClassLoader resource");
+       MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
+       mv.visitCode();
+       // return Thread.currentThread().getContextClassLoader().getResourceAsStream("META-INF/" + path) != null
+       // with fallback to ClassLoader.getSystemClassLoader()
+       mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Thread", "currentThread", "()Ljava/lang/Thread;", false);
+       mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Thread", "getContextClassLoader", "()Ljava/lang/ClassLoader;", false);
+       mv.visitVarInsn(Opcodes.ASTORE, 2);
+       mv.visitVarInsn(Opcodes.ALOAD, 2);
+       Label hasCL = new Label();
+       mv.visitJumpInsn(Opcodes.IFNONNULL, hasCL);
+       mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/ClassLoader", "getSystemClassLoader", "()Ljava/lang/ClassLoader;", false);
+       mv.visitVarInsn(Opcodes.ASTORE, 2);
+       mv.visitLabel(hasCL);
+       mv.visitVarInsn(Opcodes.ALOAD, 2);
+       mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+       mv.visitInsn(Opcodes.DUP);
+       mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V", false);
+       mv.visitLdcInsn("META-INF/");
+       mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+       mv.visitVarInsn(Opcodes.ALOAD, 1);
+       mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+       mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+       mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/ClassLoader", "getResourceAsStream", "(Ljava/lang/String;)Ljava/io/InputStream;", false);
+       Label notNull = new Label();
+       Label isTrue = new Label();
+       mv.visitJumpInsn(Opcodes.IFNONNULL, isTrue);
+       mv.visitInsn(Opcodes.ICONST_0);
+       mv.visitJumpInsn(Opcodes.GOTO, notNull);
+       mv.visitLabel(isTrue);
        mv.visitInsn(Opcodes.ICONST_1);
+       mv.visitLabel(notNull);
        mv.visitInsn(Opcodes.IRETURN);
-       mv.visitMaxs(1,2);
+       mv.visitMaxs(3,3);
        mv.visitEnd();
        return null;
       }
