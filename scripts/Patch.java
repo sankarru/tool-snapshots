@@ -19,7 +19,8 @@ public class Patch {
    final boolean isCompanion = entryName.equals("org/jetbrains/kotlin/cli/jvm/compiler/KotlinCoreEnvironment$Companion.class");
    final boolean isCoreEnv = entryName.equals("com/intellij/core/CoreApplicationEnvironment.class");
    final boolean isJvmScripting = entryName.equals("kotlin/script/experimental/jvm/JvmScriptingHostConfigurationKt.class");
-   if (isPathUtil || isCompanion || isCoreEnv || isJvmScripting) {
+   final boolean isJrtFs = entryName.equals("org/jetbrains/kotlin/cli/jvm/modules/CoreJrtFileSystem.class");
+   if (isPathUtil || isCompanion || isCoreEnv || isJvmScripting || isJrtFs) {
     System.out.println("patching " + entryName);
     ClassReader cr = new ClassReader(data);
     ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
@@ -131,6 +132,31 @@ public class Patch {
        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/File", "getAbsoluteFile", "()Ljava/io/File;", false);
        mv.visitInsn(Opcodes.ARETURN);
        mv.visitMaxs(0,0);
+       mv.visitEnd();
+       return null;
+      }
+      if (isJrtFs && name.equals("globalJrtFsCache$lambda$0") && desc.equals("(Ljava/lang/String;)Ljava/nio/file/FileSystem;")) {
+       System.out.println("patching CoreJrtFileSystem jrt provider to fallback");
+       MethodVisitor mv = cw.visitMethod(access, name, desc, sig, ex);
+       mv.visitCode();
+       Label tryStart = new Label();
+       Label tryEnd = new Label();
+       Label catchHandler = new Label();
+       mv.visitTryCatchBlock(tryStart, tryEnd, catchHandler, "java/nio/file/ProviderNotFoundException");
+       mv.visitTryCatchBlock(tryStart, tryEnd, catchHandler, "java/lang/Exception");
+       mv.visitLabel(tryStart);
+       // original body: FileSystems.newFileSystem(URI.create("jrt:/"), emptyMap)
+       mv.visitLdcInsn("jrt:/");
+       mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/net/URI", "create", "(Ljava/lang/String;)Ljava/net/URI;", false);
+       mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/util/Collections", "emptyMap", "()Ljava/util/Map;", false);
+       mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/FileSystems", "newFileSystem", "(Ljava/net/URI;Ljava/util/Map;)Ljava/nio/file/FileSystem;", false);
+       mv.visitLabel(tryEnd);
+       mv.visitInsn(Opcodes.ARETURN);
+       mv.visitLabel(catchHandler);
+       mv.visitVarInsn(Opcodes.ASTORE, 1);
+       mv.visitInsn(Opcodes.ACONST_NULL);
+       mv.visitInsn(Opcodes.ARETURN);
+       mv.visitMaxs(2,2);
        mv.visitEnd();
        return null;
       }
