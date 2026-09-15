@@ -297,6 +297,11 @@ link_snapshot() {
   local extra_args=()
   if [ "$3" = "kotlinc-snapshot" ]; then
     extra_args+=("-H:IncludeResources=.*")
+    # Kotlin's CoreJrtFileSystem uses FileSystems.newFileSystem("jrt:/") to
+    # access JDK runtime modules. Native image excludes the jrt provider
+    # by default.
+    extra_args+=("-H:EnableURLProtocols=jrt")
+    extra_args+=("--enable-url-protocols=jrt")
   fi
   "$NI" \
     -J-Xmx12g \
