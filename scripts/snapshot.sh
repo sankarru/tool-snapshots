@@ -299,9 +299,11 @@ link_snapshot() {
     extra_args+=("-H:IncludeResources=.*")
     # Kotlin's CoreJrtFileSystem uses FileSystems.newFileSystem("jrt:/") to
     # access JDK runtime modules. Native image excludes the jrt provider
-    # by default.
+    # by default — need both the URL protocol and the FileSystem provider.
     extra_args+=("-H:EnableURLProtocols=jrt")
     extra_args+=("--enable-url-protocols=jrt")
+    extra_args+=("-H:IncludeFileSystems=jrt")
+    extra_args+=("-H:+IncludeAllFileSystems")
   fi
   "$NI" \
     -J-Xmx12g \
