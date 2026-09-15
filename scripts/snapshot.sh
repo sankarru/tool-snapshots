@@ -264,6 +264,17 @@ link_snapshot() {
   done
   # Keep the trace next to the binary so later runs can diff/audit it.
   rm -rf "$OUT/$3-meta" && cp -r "$META" "$OUT/$3-meta"
+  # kotlinc locates its own jars via Class.getResource(".../CompilerSystemProperties.class")
+  # and similar lookups (PathUtil.getResourcePathForClass). The agent only
+  # records resources actually touched during tracing, but kotlinc's startup
+  # touches dozens of them. Include the compiler's resources wholesale so
+  # those lookups succeed inside the image; size cost is negligible vs the
+  # already-165 MB binary.
+  local extra_args=""
+  if [ "$3" = "kotlinc-snapshot" ]; then
+    extra_args="-H:IncludeResources=org/jetbrains/kotlin/.*|META-INF/.*"
+  fi
+  # shellcheck disable=SC2086
   "$NI" \
     -J-Xmx12g \
     --no-fallback \
@@ -271,6 +282,7 @@ link_snapshot() {
     -H:ConfigurationFileDirectories="$META" \
     -H:Name="$OUT/$3" \
     -H:+ReportExceptionStackTraces \
+    $extra_args \
     -cp "$2" "$1"
   ls -la "$OUT/$3"
 }
