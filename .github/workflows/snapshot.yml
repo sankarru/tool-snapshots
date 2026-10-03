@@ -1,4 +1,4 @@
-name: tool-snapshots (GraalVM native-image of kotlinc/R8/D8)
+name: tool-snapshots (GraalVM 25 native-image of R8/D8 built from source, kotlinc)
 
 on:
   workflow_dispatch:
@@ -11,23 +11,6 @@ on:
         description: 'Kotlin release tag (e.g., v2.2.20)'
         required: true
         default: 'v2.2.20'
-      r8_version:
-        description: 'R8 version from Google Maven (e.g. 8.13.23)'
-        required: true
-        default: '8.13.23'
-      trace_repo:
-        description: 'Public Compose Android repo used as the D8/R8 tracing corpus'
-        required: false
-        default: 'android/compose-samples'
-      trace_ref:
-        description: 'Tag/commit of trace_repo to build'
-        required: false
-        default: 'v2025.12.00'
-      trace_app:
-        description: 'Module directory inside trace_repo to build'
-        required: false
-        default: 'Reply'
-
 permissions:
   contents: read
 
@@ -52,18 +35,14 @@ jobs:
             echo "run=no" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Setup GraalVM JDK 21
+      - name: Setup GraalVM JDK 25
         if: steps.gate.outputs.run == 'yes'
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
+          java-version: '25'
           distribution: 'graalvm-community'
 
-      - name: Setup Gradle (artifact fetching only, no build plugins run)
-        if: steps.gate.outputs.run == 'yes'
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Free disk (Compose build + native-image link need the room)
+      - name: Free disk (native-image link needs the room)
         if: steps.gate.outputs.run == 'yes'
         run: |
           df -h / | tail -1
@@ -71,7 +50,7 @@ jobs:
                        /usr/local/lib/android/sdk/ndk 2>/dev/null || true
           df -h / | tail -1
 
-      - name: Setup Android SDK (D8/R8 tracing needs android.jar)
+      - name: Setup Android SDK (the corpus needs android.jar)
         if: steps.gate.outputs.run == 'yes'
         uses: android-actions/setup-android@v3
         with:
@@ -80,7 +59,7 @@ jobs:
           # exists; the platform install below uses sdkmanager directly.
           packages: platform-tools
 
-      - name: Install SDK platforms and build-tools
+      - name: Install SDK platforms (android.jar)
         if: steps.gate.outputs.run == 'yes'
         run: |
           # setup-android does not put sdkmanager on PATH; locate it under
@@ -90,29 +69,45 @@ jobs:
             SDKM="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*cmdline-tools*/bin/sdkmanager" 2>/dev/null | head -1)"
           fi
           echo "sdkmanager: $SDKM"
-          # android-35: the platform the snapshots are traced against.
-          # android-36 + build-tools: what the tracing corpus app compiles with.
-          "$SDKM" "platforms;android-35" "platforms;android-36" \
-                  "build-tools;35.0.0" "build-tools;36.0.0"
+          # android.jar only: D8/R8 are driven standalone, so no build-tools
+          # and no aapt2 (Google's aapt2 is x86-64 only). android-35 is what
+          # the snapshots are traced against, android-36 adds a second library
+          # level for the resolution paths.
+          "$SDKM" "platforms;android-35" "platforms;android-36"
           df -h / | tail -1
 
-      - name: Trace + link + smoke-test
+      - name: Build + link + smoke-test
         if: steps.gate.outputs.run == 'yes'
         env:
           TOOL: ${{ matrix.tool }}
           KOTLIN_TAG: ${{ inputs.kotlin_version }}
-          R8_VERSION: ${{ inputs.r8_version }}
-          TRACE_REPO: ${{ inputs.trace_repo }}
-          TRACE_REF: ${{ inputs.trace_ref }}
-          TRACE_APP: ${{ inputs.trace_app }}
-        run: bash scripts/snapshot.sh
+        run: |
+          set -o pipefail
+          mkdir -p "work-${{ matrix.tool }}"
+          bash scripts/snapshot.sh 2>&1 | tee "work-${{ matrix.tool }}/log-snapshot.txt"
 
-      - name: Upload snapshot binary + trace metadata
+      - name: Upload build logs
+        if: always() && steps.gate.outputs.run == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.tool }}-logs
+          path: |
+            work-${{ matrix.tool }}/log-*.txt
+            work-${{ matrix.tool }}/kotlinc-corpus.log
+            work-${{ matrix.tool }}/corpus/report.txt
+            work-${{ matrix.tool }}/native/*.native-image.log
+            work-${{ matrix.tool }}/out/*-smoke-report.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload snapshot binary
         if: steps.gate.outputs.run == 'yes'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.tool }}-snapshot-arm64
-          path: out/
+          path: |
+            out/${{ matrix.tool }}-snapshot
+            out/${{ matrix.tool }}-smoke-report.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -134,11 +129,11 @@ jobs:
           repository: sankarru/compose-aot
           path: compose-aot
 
-      - name: Setup JDK 21 (kotlinc compiler runs on any stock JDK)
+      - name: Setup JDK 25 (the kotlinc compiler runs on any stock JDK)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '25'
 
       - name: Setup Gradle (dependency resolution only, no build plugins)
         uses: gradle/actions/setup-gradle@v4

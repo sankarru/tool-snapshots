@@ -1,0 +1,58 @@
+Native-image adaptation: instantiate the threading module providers that ship
+inside this jar directly instead of looking them up with Class.forName.
+A GraalVM native image has no classpath to scan at run time, so the
+reflective lookup cannot find them; the reflective path stays as the
+fallback for providers that live outside this jar.
+
+--- a/src/main/java/com/android/tools/r8/threading/ThreadingModule.java
++++ b/src/main/java/com/android/tools/r8/threading/ThreadingModule.java
+@@ -11,6 +11,8 @@
+ import com.android.tools.r8.keepanno.annotations.MemberAccessFlags;
+ import com.android.tools.r8.keepanno.annotations.UsedByReflection;
+ import com.android.tools.r8.keepanno.annotations.UsesReflection;
++import com.android.tools.r8.threading.providers.blocking.ThreadingModuleBlockingProvider;
++import com.android.tools.r8.threading.providers.singlethreaded.ThreadingModuleSingleThreadedProvider;
+ import com.google.common.collect.ImmutableList;
+ import java.util.List;
+ import java.util.concurrent.Callable;
+@@ -72,6 +74,10 @@
+           methodParameters = {})
+     })
+     public static ThreadingModuleProvider load() {
++      ThreadingModuleProvider bundled = loadBundledProvider();
++      if (bundled != null) {
++        return bundled;
++      }
+       for (String name : getProviderNames()) {
+         try {
+           Class<?> providerClass = Class.forName(name);
+@@ -84,5 +90,29 @@
+       }
+       throw new CompilationError("Failure to find a provider for the threading module");
+     }
++
++    /**
++     * Instantiate the providers that ship inside this jar, in the same order {@link
++     * #getProviderNames()} lists them.
++     *
++     * <p>This is a plain virtual call rather than {@code Class.forName}, which matters when this jar
++     * is the input to a GraalVM native image: there is no classpath left to scan at run time, so a
++     * reflective lookup of a class that the image builder did not see statically fails even though
++     * the class is right there. The reflective lookup is kept as the fallback so that providers
++     * living outside this jar still work on a normal JVM.
++     */
++    private static ThreadingModuleProvider loadBundledProvider() {
++      try {
++        return new ThreadingModuleBlockingProvider();
++      } catch (LinkageError ignored) {
++        // Provider not present in this build of the jar.
++      }
++      try {
++        return new ThreadingModuleSingleThreadedProvider();
++      } catch (LinkageError ignored) {
++        // Provider not present in this build of the jar.
++      }
++      return null;
++    }
+   }
+ }

@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Trace a JVM tool with the native-image agent, link it with native-image,
-# and smoke-test the resulting snapshot binary.
-# Env: TOOL (d8|r8|kotlinc), KOTLIN_TAG (vX.Y.Z), R8_VERSION (X.Y.Z).
-# Requires: GraalVM 21 (JAVA_HOME), and for d8/r8 an Android SDK (ANDROID_HOME).
+# Produce a snapshot binary and smoke-test it.
+#
+# d8/r8: R8 is built from the latest googlesource revision with
+# scripts/build-r8-source.sh (no Gradle, no prebuilt r8.jar) and linked with
+# scripts/build-native-image.sh. Nothing is traced with the native-image agent;
+# what the image builder cannot see is handled by the patches in
+# scripts/r8-overlay plus the resource list in build-native-image.sh.
+#
+# kotlinc: unchanged, still traced with the agent.
+#
+# Env: TOOL (d8|r8|kotlinc), KOTLIN_TAG (vX.Y.Z).
+# Requires: GraalVM 25 (JAVA_HOME), and an Android SDK (ANDROID_HOME) for the
+# corpus' android.jar.
 set -euo pipefail
 
 TOOL="${TOOL:?set TOOL}"
@@ -18,14 +27,6 @@ AGENT="-agentlib:native-image-agent=config-output-dir=$META"
 
 echo "=== tool=$TOOL graal=$(basename "$JAVA_HOME") ==="
 
-fetch_r8() {
-  if [ ! -f "$WORK/r8.jar" ]; then
-    curl -sSfL -o "$WORK/r8.jar" \
-      "https://dl.google.com/dl/android/maven2/com/android/tools/r8/${R8_VERSION:?}/r8-${R8_VERSION}.jar"
-  fi
-  echo "$WORK/r8.jar"
-}
-
 fetch_kotlinc() {
   if [ ! -d "$WORK/kotlinc" ]; then
     curl -sSfL -o "$WORK/kotlinc.zip" \
@@ -37,44 +38,46 @@ fetch_kotlinc() {
 
 make_sample_jar() {
   # Tiny Java sample -> hello.jar, the fallback tracing/verification input
-  # when the real Compose corpus could not be built.
-  mkdir -p "$SAMPLE/src/hello"
-  cat > "$SAMPLE/src/hello/Hello.java" <<'EOF'
-package hello;
+  # when the real Compose corpus could not be built. Its package is snaphello,
+  # NOT hello: corpus.sh ships its own hello.Hello sample and D8 rejects a
+  # program input set that defines the same type twice.
+  mkdir -p "$SAMPLE/src/snaphello"
+  cat > "$SAMPLE/src/snaphello/Hello.java" <<'EOF'
+package snaphello;
 public class Hello {
   public static void main(String[] args) {
     System.out.println("hello from " + (args.length > 0 ? args[0] : "snapshot"));
   }
 }
 EOF
-  "$JAVA_HOME/bin/javac" -d "$SAMPLE/classes" "$SAMPLE/src/hello/Hello.java"
+  "$JAVA_HOME/bin/javac" -d "$SAMPLE/classes" "$SAMPLE/src/snaphello/Hello.java"
   "$JAVA_HOME/bin/jar" --create --file "$SAMPLE/hello.jar" -C "$SAMPLE/classes" .
   echo "$SAMPLE/hello.jar"
 }
 
-# Build the tracing corpus for d8/r8: a real Compose Android app module built
-# by Gradle, its production classpath, and JVM libraries that hit the
-# desugaring/library paths. Everything the trace runs then operates on real
-# bytecode instead of a hello-world jar.
+# Build the tracing corpus for d8/r8: pinned androidx/compose artifacts, real
+# @Composable bytecode compiled with kotlinc + the Compose compiler plugin, and
+# JVM libraries that hit the desugaring/library paths. No Gradle: D8 and R8 are
+# used standalone, so the corpus is plain jars on a command line too.
 build_corpus() {
   WORK="$WORK" JAVA_BIN="$GRAAL_BIN" HELLO_JAR="$1" \
-  TRACE_REPO="${TRACE_REPO:-android/compose-samples}" \
-  TRACE_REF="${TRACE_REF:-v2025.12.00}" \
-  TRACE_APP="${TRACE_APP:-Reply}" \
+  KOTLIN_TAG="${KOTLIN_TAG:-v2.2.21}" \
     bash scripts/corpus.sh
   df -h "$WORK" | tail -1
 }
 
-trace_d8() {
-  # $1 = r8 jar. The whole flag matrix runs under the agent; see
-  # scripts/trace-matrix.sh for why each run exists.
-  TOOL=d8 WORK="$WORK" R8JAR="$1" JAVA_BIN="$GRAAL_BIN" META="$META" \
-    bash scripts/trace-matrix.sh
+# Build R8 from source into $WORK/r8-src.jar. Both d8 and r8 come out of this
+# one jar; the tool identity is only the entry point chosen at link time.
+build_r8_source() {
+  WORK="$WORK" JAVA_BIN="$GRAAL_BIN" \
+    ANDROID_SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT:-}}" \
+    bash scripts/build-r8-source.sh
+  "$JAVA_HOME/bin/java" -jar "$WORK/r8-src.jar" --version
 }
 
-trace_r8() {
-  TOOL=r8 WORK="$WORK" R8JAR="$1" JAVA_BIN="$GRAAL_BIN" META="$META" \
-    bash scripts/trace-matrix.sh
+link_r8_snapshot() { # $1 = d8|r8
+  WORK="$WORK" OUT_DIR="$OUT" JAVA_BIN="$GRAAL_BIN" TOOLS="$1" \
+    bash scripts/build-native-image.sh
 }
 
 trace_kotlinc() {
@@ -316,21 +319,12 @@ link_snapshot() {
 }
 
 case "$TOOL" in
-  d8)
-    R8JAR="$(fetch_r8)"
+  d8|r8)
+    build_r8_source
     HELLO="$(make_sample_jar)"
     build_corpus "$HELLO"
-    trace_d8 "$R8JAR"
-    link_snapshot com.android.tools.r8.D8 "$R8JAR" d8-snapshot
-    TOOL=d8 WORK="$WORK" OUT="$OUT" bash scripts/smoke-snapshot.sh
-    ;;
-  r8)
-    R8JAR="$(fetch_r8)"
-    HELLO="$(make_sample_jar)"
-    build_corpus "$HELLO"
-    trace_r8 "$R8JAR"
-    link_snapshot com.android.tools.r8.R8 "$R8JAR" r8-snapshot
-    TOOL=r8 WORK="$WORK" OUT="$OUT" bash scripts/smoke-snapshot.sh
+    link_r8_snapshot "$TOOL"
+    TOOL="$TOOL" WORK="$WORK" OUT="$OUT" bash scripts/smoke-snapshot.sh
     ;;
   kotlinc)
     KDIR="$(fetch_kotlinc)"

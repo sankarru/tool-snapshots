@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# Build the D8/R8 tracing corpus out of a PUBLIC Compose Android app.
+# Build the D8/R8 tracing corpus out of public Compose artifacts, with no
+# Gradle/AGP anywhere: D8 and R8 are standalone tools here, so the corpus is
+# built the same way they are used - plain jars on a command line.
 #
 # Why: tracing D8/R8 on a hello-world jar only records the handful of code
-# paths a trivial class needs. The tool's real surface is class reading,
-# desugaring, library resolution, shrinking and dex layout over Kotlin +
-# Compose bytecode, so the corpus is a real app module built by Gradle, its
-# real runtime classpath (every androidx/compose AAR), plus JVM libraries
-# that hit desugaring-heavy shapes (records, sealed types, java.time/stream
-# backed library desugaring, coroutines, reflection).
+# paths a trivial class needs. Their real surface is class reading, desugaring,
+# library resolution, shrinking and dex layout over Kotlin + Compose bytecode,
+# so the corpus is:
+#   * the androidx/compose runtime, UI, foundation and material3 AARs (the same
+#     artifacts a Compose app resolves, straight from Google Maven, classes.jar
+#     extracted - no build step, no AAPT2),
+#   * real @Composable bytecode compiled here by kotlinc + the Compose compiler
+#     plugin against those artifacts,
+#   * JVM libraries that hit desugaring-heavy shapes (records, sealed types,
+#     java.time/stream backed library desugaring, coroutines, reflection),
+#   * synthetic samples for the byte shapes that need a hand-written trigger
+#     (default/static interface methods, try-with-resources, records, a
+#     deliberately broken class reference).
 #
 # Writes (all absolute paths, one per line):
 #   $WORK/corpus/programs.txt    program inputs  (app classes + samples)
@@ -16,24 +25,25 @@
 #   $WORK/corpus/env.txt         ANDROID_LIB / ANDROID_LIB2 (sourceable)
 #   $WORK/corpus/report.txt      what went in, for the CI log
 #
-# Env: WORK (required), JAVA_BIN, ANDROID_SDK, HELLO_JAR, TRACE_REPO,
-#      TRACE_REF, TRACE_APP, CORPUS_CLEAN_GRADLE.
-# A failed app build is NOT fatal: the corpus falls back to the synthetic
-# samples + JVM libraries and says so loudly in the report.
+# Env: WORK (required), JAVA_BIN, ANDROID_SDK, HELLO_JAR, KOTLIN_TAG,
+#      TRACE_BUILD, CORPUS_KEEP_GRADLE (unused, kept for compatibility).
+# Nothing here is fatal: a failed clone / resolution / compile degrades the
+# corpus and says so loudly in the report.
 set -euo pipefail
 
 WORK="${WORK:?set WORK}"
 JAVA_BIN="${JAVA_BIN:-$JAVA_HOME/bin}"
 ANDROID_SDK="${ANDROID_SDK:-${ANDROID_HOME:-$ANDROID_SDK_ROOT}}"
 HELLO_JAR="${HELLO_JAR:-}"
-TRACE_REPO="${TRACE_REPO:-android/compose-samples}"
-TRACE_REF="${TRACE_REF:-v2025.12.00}"
-TRACE_APP="${TRACE_APP:-Reply}"
-CORPUS_CLEAN_GRADLE="${CORPUS_CLEAN_GRADLE:-1}"
-# TRACE_BUILD=0 skips the Gradle build of the app module (dry runs on a
-# machine without an SDK/network); the corpus is then samples + JVM libs.
+CORPUS_KEEP_GRADLE="${CORPUS_KEEP_GRADLE:-1}"
+# TRACE_BUILD=0 skips the kotlinc/Compose-plugin compile (dry runs on a machine
+# without network); the corpus is then synthetic samples + libraries only.
 TRACE_BUILD="${TRACE_BUILD:-1}"
 
+KOTLIN_TAG="${KOTLIN_TAG:-v2.2.21}"
+# Namespace the synthetic Compose sources live in; also what the R8 keep rules
+# name (there is no app module to read a namespace from).
+CORPUS_NS="${CORPUS_NS:-corpus.compose}"
 CORPUS="$WORK/corpus"
 CP_JARS="$CORPUS/cp"
 SAMPLES="$CORPUS/samples"
@@ -42,6 +52,7 @@ REPORT="$CORPUS/report.txt"
 rm -rf "$CORPUS"
 mkdir -p "$CP_JARS" "$SAMPLES" "$APP_CLASSES"
 : > "$REPORT"
+
 say() { echo "$*" | tee -a "$REPORT"; }
 add_prog() { [ -e "$1" ] && printf '%s\n' "$1" >> "$CORPUS/programs.txt"; }
 add_cp()   { [ -e "$1" ] && printf '%s\n' "$1" >> "$CORPUS/classpath.txt"; }
@@ -215,122 +226,258 @@ JVM_LIBS=(
   "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.21/kotlin-stdlib-2.2.21.jar"
   "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-reflect/2.2.21/kotlin-reflect-2.2.21.jar"
   "https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.11.0/kotlinx-coroutines-core-jvm-1.11.0.jar"
+  "https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-serialization-core-jvm/1.11.0/kotlinx-serialization-core-jvm-1.11.0.jar"
   "https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-serialization-json-jvm/1.11.0/kotlinx-serialization-json-jvm-1.11.0.jar"
   "https://repo1.maven.org/maven2/org/jetbrains/kotlinx/kotlinx-collections-immutable-jvm/0.5.2/kotlinx-collections-immutable-jvm-0.5.2.jar"
   "https://repo1.maven.org/maven2/com/google/guava/guava/33.4.8-jre/guava-33.4.8-jre.jar"
   "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs/2.1.5/desugar_jdk_libs-2.1.5.jar"
   "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs_configuration/2.1.5/desugar_jdk_libs_configuration-2.1.5.jar"
 )
-say "=== corpus: jvm libraries ==="
-for u in "${JVM_LIBS[@]}"; do
-  f="$CP_JARS/$(basename "$u")"
-  if [ ! -f "$f" ]; then
-    curl -sSfL --retry 3 --retry-delay 2 -o "$f.part" "$u" && mv "$f.part" "$f" \
-      || say "  skipped (fetch failed): $u"
+# add_remote <url> : fetch into the classpath dir, extracting classes.jar from
+# AARs (androidx ships AARs; D8/R8 need the class files, not the archive).
+add_remote() {
+  local u="$1" base f
+  base="$(basename "$u")"
+  # The extension matters: D8/R8 reject a jar without one ("Unsupported
+  # classpath file type"). AARs become directories holding classes.jar.
+  case "$base" in
+    *.aar) base="${base%.aar}" ;;
+  esac
+  f="$CP_JARS/$base"
+  case "$u" in
+    *.aar) [ -f "$f/classes.jar" ] && { add_cp "$f/classes.jar"; return; } ;;
+    *)     [ -f "$f" ] && { add_cp "$f"; return; } ;;
+  esac
+  if curl -sSfL --retry 3 --retry-delay 2 -o "$f.part" "$u"; then
+    mv "$f.part" "$f"
+  else
+    rm -f "$f.part"
+    say "  skipped (fetch failed): $u"
+    return
   fi
-  [ -f "$f" ] && add_cp "$f"
-done
+  case "$u" in
+    *.aar)
+      mkdir -p "$f.d"
+      if unzip -o -q "$f" classes.jar -d "$f.d" 2>/dev/null; then
+        rm -f "$f"
+        mv "$f.d" "$f"
+        add_cp "$f/classes.jar"
+      else
+        say "  no classes.jar in $base"
+      fi
+      ;;
+    *) add_cp "$f" ;;
+  esac
+}
+
+say "=== corpus: jvm libraries ==="
+for u in "${JVM_LIBS[@]}"; do add_remote "$u"; done
 say "jvm libraries: $(wc -l < "$CORPUS/classpath.txt") entries"
 
-# ------------------------------------------------------- the Compose app
-say "=== corpus: $TRACE_REPO@$TRACE_REF ($TRACE_APP) ==="
-SRC="$WORK/compose-samples"
-APP="$SRC/$TRACE_APP"
-APP_BUILT=0
-if [ "$TRACE_BUILD" != 1 ]; then
-  say "TRACE_BUILD=$TRACE_BUILD, skipping the app build"
-elif [ ! -d "$APP" ]; then
-  rm -rf "$SRC"
-  git clone --depth 1 --branch "$TRACE_REF" --single-branch \
-    "https://github.com/$TRACE_REPO.git" "$SRC"
-  [ -d "$APP" ] || say "WARNING: $TRACE_APP not found in $TRACE_REPO@$TRACE_REF"
-fi
-if [ "$APP_BUILT" = 0 ] && [ "$TRACE_BUILD" = 1 ] && [ -d "$APP" ]; then
-  # Resolve the module's real debug runtime classpath (AARs included) and
-  # print it, instead of copying it around: AGP's configurations know which
-  # artifacts are AARs, which are plain jars, and which are local projects.
-  INIT="$WORK/init-tracecp.gradle"
-  cat > "$INIT" <<'EOF'
-// Registers a task that dumps `debugRuntimeClasspath` as absolute paths so
-// the tracing corpus can feed production libraries to D8/R8. Applied with
-// -I, so the cloned project stays untouched.
-allprojects { p ->
-  p.tasks.register('fetchTraceCp') {
-    doLast {
-      def cfg = p.configurations.findByName('debugRuntimeClasspath')
-      def out = new File(p.layout.buildDirectory.get().asFile, 'tracecp')
-      out.mkdirs()
-      def files = cfg == null ? [] : cfg.files.findAll {
-        it.name.endsWith('.jar') || it.name.endsWith('.aar')
-      }.collect { it.absolutePath }
-      new File(out, 'cp.txt').text = files.join('\n')
+# androidx/compose artifacts a Compose app resolves, pinned to versions that
+# exist on Google Maven. Extracted to classes.jar by add_remote.
+COMPOSE_LIBS=(
+  "https://dl.google.com/dl/android/maven2/androidx/compose/runtime/runtime-android/1.7.6/runtime-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/runtime/runtime-saveable-android/1.7.6/runtime-saveable-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-geometry-android/1.7.6/ui-geometry-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-util-android/1.7.6/ui-util-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-unit-android/1.7.6/ui-unit-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/collection/collection-jvm/1.5.0/collection-jvm-1.5.0.jar"
+  "https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-jvm/1.9.1/annotation-jvm-1.9.1.jar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-android/1.7.6/ui-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/foundation/foundation-layout-android/1.7.6/foundation-layout-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/foundation/foundation-android/1.7.6/foundation-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/material3/material3-android/1.3.2/material3-android-1.3.2.aar"
+)
+
+# The sources kotlinc + the Compose compiler plugin turn into the corpus's main
+# program input: real @Composable bytecode, written against plain
+# androidx.compose APIs so they compile against any 1.7+/1.9 runtime. The point
+# is the bytecode shapes they produce - composable lambdas, remember slots,
+# recomposer groups, rememberSaveable writers, LazyColumn item keys, flow
+# state, immutable collections, a generated serializer - all of which the dexers
+# have to rewrite.
+make_compose_sources() {
+  local d="$1"
+  mkdir -p "$d"
+  cat > "$d/Model.kt" <<'EOF'
+package corpus.compose
+
+import kotlinx.collections.immutable.PersistentList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+@Serializable
+data class Item(
+  val id: Long,
+  val title: String,
+  val done: Boolean = false,
+  val tags: PersistentList<String> = persistentListOf(),
+)
+
+@Serializable
+data class Snapshot(val items: PersistentList<Item>, val cursor: Int)
+
+class ItemStore(seed: PersistentList<Item> = persistentListOf()) {
+  private val _state = MutableStateFlow(seed)
+  val state: StateFlow<PersistentList<Item>> = _state.asStateFlow()
+  val open: StateFlow<Int> = MutableStateFlow(_state.value.count { !it.done }).asStateFlow()
+
+  fun toggle(id: Long) {
+    val next = _state.value.map { if (it.id == id) it.copy(done = !it.done) else it }
+    _state.value = persistentListOf(*next.toTypedArray())
+  }
+
+  fun encode(): String =
+    Json { encodeDefaults = true }.encodeToString(Snapshot(_state.value, 0))
+}
+EOF
+  cat > "$d/Ui.kt" <<'EOF'
+package corpus.compose
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+val LocalStore = staticCompositionLocalOf<ItemStore> { ItemStore() }
+
+@Composable
+fun ItemRow(item: Item, onToggle: (Long) -> Unit) {
+  var label by remember(item.id) { mutableStateOf(item.title) }
+  val styled by remember(item.id, item.done) { derivedStateOf { label.trim() } }
+  Column(modifier = Modifier.fillMaxWidth().padding(4.dp)) {
+    Text(styled)
+    Checkbox(checked = item.done, onCheckedChange = { onToggle(item.id) })
+    Button(onClick = { label = item.title.uppercase() }) { Text("rename") }
+  }
+}
+
+@Composable
+fun ItemList(store: ItemStore, modifier: Modifier = Modifier) {
+  val list = store.state.value
+  val scope = rememberCoroutineScope()
+  var query by rememberSaveable { mutableStateOf("") }
+  LaunchedEffect(query) { delay(1) }
+  Scaffold(modifier = modifier) {
+    LazyColumn {
+      items(list, key = { it.id }) { item ->
+        key(item.id) {
+          CompositionLocalProvider(LocalStore provides store) {
+            ItemRow(item) { id -> scope.launch { store.toggle(id) } }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+fun App(store: ItemStore) {
+  MaterialTheme {
+    CompositionLocalProvider(LocalStore provides store) {
+      ItemList(store, Modifier.fillMaxWidth())
     }
   }
 }
 EOF
-  # assembleDebug is the whole real pipeline (resources, kotlin+java compile,
-  # dexing) - it is the only task set that proves the module really builds.
-  if ( cd "$APP" && ./gradlew --no-daemon --console=plain --no-configuration-cache \
-         "-Dorg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m" \
-         -I "$INIT" :app:assembleDebug :app:fetchTraceCp ) > "$WORK/gradle-app.log" 2>&1; then
-    APP_BUILT=1
-    say "gradle assembleDebug: ok"
-  else
-    say "WARNING: gradle assembleDebug failed, see $WORK/gradle-app.log"
-    tail -30 "$WORK/gradle-app.log" | sed 's/^/    /' | tee -a "$REPORT"
-  fi
-fi
+  cat > "$d/Main.kt" <<'EOF'
+package corpus.compose
 
-if [ "$APP_BUILT" = 1 ]; then
-  # The app's namespace seeds the R8 keep rules (entry point + data layer).
-  ns="$(sed -n 's/^[[:space:]]*namespace[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "$APP/app/build.gradle.kts" 2>/dev/null | head -1 || true)"
-  if [ -n "$ns" ]; then
-    echo "$ns" > "$CORPUS/namespace.txt"
-    say "app namespace: $ns"
+import kotlinx.collections.immutable.persistentListOf
+
+fun main() {
+  val store = ItemStore(
+    persistentListOf(
+      Item(1, "one", tags = persistentListOf("a")),
+      Item(2, "two"),
+    ),
+  )
+  store.toggle(1)
+  println(store.encode() + " open=" + store.open.value)
+}
+EOF
+}
+
+make_compose_app() {
+  local tag="${KOTLIN_TAG:-v2.2.21}" ver="${KOTLIN_TAG#v}"
+  local cdir="$WORK/kotlinc" csrc="$WORK/compose-src"
+  mkdir -p "$csrc"
+  local plugin
+  make_compose_sources "$csrc"
+  if [ ! -x "$cdir/bin/kotlinc" ]; then
+    if ! curl -sSfL --retry 3 --retry-delay 2 -o "$WORK/kotlinc.zip" \
+        "https://github.com/JetBrains/kotlin/releases/download/$tag/kotlin-compiler-$ver.zip"; then
+      say "  skipped (kotlinc download failed)"; return
+    fi
+    unzip -q "$WORK/kotlinc.zip" -d "$WORK" || { say "  skipped (kotlinc unzip failed)"; return; }
   fi
-  CP_LIST="$APP/app/build/tracecp/cp.txt"
-  if [ -f "$CP_LIST" ]; then
-    n_jar=0; n_aar=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      case "$f" in
-        *.aar)
-          name="$(basename "$f" .aar)"
-          mkdir -p "$CP_JARS/aar-$name"
-          if unzip -o -q "$f" classes.jar -d "$CP_JARS/aar-$name" 2>/dev/null; then
-            add_cp "$CP_JARS/aar-$name/classes.jar"; n_aar=$((n_aar + 1))
-          fi
-          ;;
-        *.jar)
-          n_jar=$((n_jar + 1))
-          dst="$CP_JARS/j$n_jar-$(basename "$f")"
-          cp -f "$f" "$dst"
-          add_cp "$dst"
-          ;;
-      esac
-    done < "$CP_LIST"
-    say "app classpath: $n_jar jars, $n_aar aars"
+  plugin="$cdir/lib/compose-compiler-plugin.jar"
+  # The compiler plugins ship inside the kotlinc dist (kotlinc/lib). The
+  # embeddable compose plugin from Maven Central is NOT usable standalone: it
+  # expects the shaded intellij PSI classes the dist provides.
+  [ -f "$plugin" ] || { say "  skipped (no compose plugin in $cdir/lib)"; return; }
+  local serplugin="$cdir/lib/kotlinx-serialization-compiler-plugin.jar"
+  local xplugin=(-Xplugin="$plugin")
+  [ -f "$serplugin" ] && xplugin+=(-Xplugin="$serplugin")
+  local cp="" e
+  while IFS= read -r e; do
+    [ -f "$e" ] || continue
+    cp="${cp:+$cp:}$e"
+  done < "$CORPUS/classpath.txt"
+  rm -rf "$APP_CLASSES/compose"
+  if "$cdir/bin/kotlinc" "${xplugin[@]}" -nowarn -jvm-target 17 \
+       -classpath "$cp" -d "$APP_CLASSES/compose" "$csrc"/*.kt \
+       > "$WORK/kotlinc-corpus.log" 2>&1; then
+    "$JAVA_BIN/jar" --create --file "$APP_CLASSES/compose-app.jar" -C "$APP_CLASSES/compose" .
+    add_prog "$APP_CLASSES/compose-app.jar"
+    say "compose-app.jar: $(find "$APP_CLASSES/compose" -name '*.class' | wc -l) classes"
   else
-    say "WARNING: fetchTraceCp produced no cp.txt"
+    say "WARNING: compose sample did not compile, see $WORK/kotlinc-corpus.log"
+    tail -20 "$WORK/kotlinc-corpus.log" | sed 's/^/    /' | tee -a "$REPORT"
   fi
-  # Harvest the app's own compiled classes (kotlin metadata, composables,
-  # generated serializers) as PROGRAM input, copied out of the build tree so
-  # the tree can be deleted to free disk before native-image runs.
-  n_cls=0
-  for d in "$APP/app/build/tmp/kotlin-classes/debug" \
-           "$APP/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes"; do
-    [ -d "$d" ] || continue
-    tgt="$APP_CLASSES/$(basename "$(dirname "$d")")-$(basename "$d")"
-    mkdir -p "$tgt"; cp -r "$d/." "$tgt/" 2>/dev/null || true
-    add_prog "$tgt"; n_cls=$((n_cls + 1))
-  done
-  for j in $(find "$APP/app/build/intermediates" -path "*r_class_jar*" -name R.jar 2>/dev/null); do
-    cp "$j" "$APP_CLASSES/R-$(basename "$(dirname "$j")").jar" 2>/dev/null || true
-    add_prog "$APP_CLASSES/R-$(basename "$(dirname "$j")").jar"
-    n_cls=$((n_cls + 1))
-  done
-  say "app program inputs: $n_cls"
+}
+
+# --------------------------------------------------- Compose program input
+say "=== corpus: compose artifacts + composable bytecode ==="
+
+# The compose runtime an app links against, straight from Google Maven. These
+# are the libraries D8/R8 must READ for desugaring and resolution, which is a
+# different code path from program classes. classes.jar is pulled out of each
+# AAR because that is what a dexing classpath actually contains.
+for u in "${COMPOSE_LIBS[@]}"; do add_remote "$u"; done
+say "compose libraries: $(wc -l < "$CORPUS/classpath.txt") entries on the classpath"
+
+if [ "$TRACE_BUILD" != 1 ]; then
+  say "TRACE_BUILD=$TRACE_BUILD, skipping the kotlinc compose compile"
+else
+  make_compose_app
 fi
 
 # ----------------------------------------------------------------- summary
@@ -340,14 +487,5 @@ sort -u "$CORPUS/samples.txt" -o "$CORPUS/samples.txt"
 say "programs:  $(wc -l < "$CORPUS/programs.txt")"
 say "classpath: $(wc -l < "$CORPUS/classpath.txt")"
 du -sh "$CORPUS" | tee -a "$REPORT"
-
-# The Compose build leaves several GB of Gradle caches and build outputs
-# behind; native-image needs that disk (and RAM) for the link itself.
-if [ "$CORPUS_CLEAN_GRADLE" = 1 ]; then
-  say "=== freeing build disk ==="
-  rm -rf "$SRC"
-  rm -rf "${GRADLE_USER_HOME:-$HOME/.gradle}/caches" \
-         "${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper" 2>/dev/null || true
-  df -h "$WORK" | tail -1 | tee -a "$REPORT"
-fi
+df -h "$WORK" | tail -1 | tee -a "$REPORT"
 echo "=== corpus ready: $CORPUS ==="
