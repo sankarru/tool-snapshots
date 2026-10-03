@@ -6,15 +6,27 @@ on:
       tools:
         description: 'Tools to snapshot (comma: d8,r8,kotlinc)'
         required: true
-        default: 'kotlinc'
+        default: 'd8,r8'
       kotlin_version:
-        description: 'Kotlin release tag (e.g. v2.2.20)'
+        description: 'Kotlin release tag (e.g., v2.2.20)'
         required: true
         default: 'v2.2.20'
       r8_version:
         description: 'R8 version from Google Maven (e.g. 8.13.23)'
         required: true
         default: '8.13.23'
+      trace_repo:
+        description: 'Public Compose Android repo used as the D8/R8 tracing corpus'
+        required: false
+        default: 'android/compose-samples'
+      trace_ref:
+        description: 'Tag/commit of trace_repo to build'
+        required: false
+        default: 'v2025.12.00'
+      trace_app:
+        description: 'Module directory inside trace_repo to build'
+        required: false
+        default: 'Reply'
 
 permissions:
   contents: read
@@ -51,6 +63,14 @@ jobs:
         if: steps.gate.outputs.run == 'yes'
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Free disk (Compose build + native-image link need the room)
+        if: steps.gate.outputs.run == 'yes'
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/az \
+                       /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+          df -h / | tail -1
+
       - name: Setup Android SDK (D8/R8 tracing needs android.jar)
         if: steps.gate.outputs.run == 'yes'
         uses: android-actions/setup-android@v3
@@ -60,7 +80,7 @@ jobs:
           # exists; the platform install below uses sdkmanager directly.
           packages: platform-tools
 
-      - name: Install SDK platform for tracing
+      - name: Install SDK platforms and build-tools
         if: steps.gate.outputs.run == 'yes'
         run: |
           # setup-android does not put sdkmanager on PATH; locate it under
@@ -70,7 +90,11 @@ jobs:
             SDKM="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*cmdline-tools*/bin/sdkmanager" 2>/dev/null | head -1)"
           fi
           echo "sdkmanager: $SDKM"
-          "$SDKM" "platforms;android-35"
+          # android-35: the platform the snapshots are traced against.
+          # android-36 + build-tools: what the tracing corpus app compiles with.
+          "$SDKM" "platforms;android-35" "platforms;android-36" \
+                  "build-tools;35.0.0" "build-tools;36.0.0"
+          df -h / | tail -1
 
       - name: Trace + link + smoke-test
         if: steps.gate.outputs.run == 'yes'
@@ -78,6 +102,9 @@ jobs:
           TOOL: ${{ matrix.tool }}
           KOTLIN_TAG: ${{ inputs.kotlin_version }}
           R8_VERSION: ${{ inputs.r8_version }}
+          TRACE_REPO: ${{ inputs.trace_repo }}
+          TRACE_REF: ${{ inputs.trace_ref }}
+          TRACE_APP: ${{ inputs.trace_app }}
         run: bash scripts/snapshot.sh
 
       - name: Upload snapshot binary + trace metadata

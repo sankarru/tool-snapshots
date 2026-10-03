@@ -36,7 +36,8 @@ fetch_kotlinc() {
 }
 
 make_sample_jar() {
-  # Tiny Java sample -> hello.jar, the D8/R8 tracing + verification input.
+  # Tiny Java sample -> hello.jar, the fallback tracing/verification input
+  # when the real Compose corpus could not be built.
   mkdir -p "$SAMPLE/src/hello"
   cat > "$SAMPLE/src/hello/Hello.java" <<'EOF'
 package hello;
@@ -51,29 +52,29 @@ EOF
   echo "$SAMPLE/hello.jar"
 }
 
+# Build the tracing corpus for d8/r8: a real Compose Android app module built
+# by Gradle, its production classpath, and JVM libraries that hit the
+# desugaring/library paths. Everything the trace runs then operates on real
+# bytecode instead of a hello-world jar.
+build_corpus() {
+  WORK="$WORK" JAVA_BIN="$GRAAL_BIN" HELLO_JAR="$1" \
+  TRACE_REPO="${TRACE_REPO:-android/compose-samples}" \
+  TRACE_REF="${TRACE_REF:-v2025.12.00}" \
+  TRACE_APP="${TRACE_APP:-Reply}" \
+    bash scripts/corpus.sh
+  df -h "$WORK" | tail -1
+}
+
 trace_d8() {
-  local r8jar="$1" hello="$2"
-  local android_jar="$ANDROID_HOME/platforms/android-35/android.jar"
-  rm -rf "$SAMPLE/dex-out" && mkdir -p "$SAMPLE/dex-out"
-  # Real dex run under the agent: this is what teaches native-image which
-  # classes/resources D8 touches. Not `--version` (that traces nothing).
-  "$JAVA_HOME/bin/java" "$AGENT" -cp "$r8jar" com.android.tools.r8.D8 \
-    --lib "$android_jar" --min-api 24 \
-    --output "$SAMPLE/dex-out" "$hello"
-  ls "$SAMPLE/dex-out"
+  # $1 = r8 jar. The whole flag matrix runs under the agent; see
+  # scripts/trace-matrix.sh for why each run exists.
+  TOOL=d8 WORK="$WORK" R8JAR="$1" JAVA_BIN="$GRAAL_BIN" META="$META" \
+    bash scripts/trace-matrix.sh
 }
 
 trace_r8() {
-  local r8jar="$1" hello="$2"
-  cat > "$SAMPLE/rules.pro" <<'EOF'
--keep public class hello.Hello { public static void main(java.lang.String[]); }
-EOF
-  rm -rf "$SAMPLE/r8-out.jar"
-  "$JAVA_HOME/bin/java" "$AGENT" -cp "$r8jar" com.android.tools.r8.R8 \
-    --lib "$ANDROID_HOME/platforms/android-35/android.jar" \
-    --min-api 24 --pg-conf "$SAMPLE/rules.pro" \
-    --output "$SAMPLE/r8-out.jar" "$hello"
-  ls -la "$SAMPLE/r8-out.jar"
+  TOOL=r8 WORK="$WORK" R8JAR="$1" JAVA_BIN="$GRAAL_BIN" META="$META" \
+    bash scripts/trace-matrix.sh
 }
 
 trace_kotlinc() {
@@ -318,29 +319,18 @@ case "$TOOL" in
   d8)
     R8JAR="$(fetch_r8)"
     HELLO="$(make_sample_jar)"
-    trace_d8 "$R8JAR" "$HELLO"
+    build_corpus "$HELLO"
+    trace_d8 "$R8JAR"
     link_snapshot com.android.tools.r8.D8 "$R8JAR" d8-snapshot
-    echo "--- smoke: version ---"
-    "$OUT/d8-snapshot" --version
-    echo "--- smoke: dex hello.jar ---"
-    rm -rf "$SAMPLE/dex-smoke" && mkdir -p "$SAMPLE/dex-smoke"
-    "$OUT/d8-snapshot" --lib "$ANDROID_HOME/platforms/android-35/android.jar" \
-      --min-api 24 --output "$SAMPLE/dex-smoke" "$HELLO"
-    ls "$SAMPLE/dex-smoke"
+    TOOL=d8 WORK="$WORK" OUT="$OUT" bash scripts/smoke-snapshot.sh
     ;;
   r8)
     R8JAR="$(fetch_r8)"
     HELLO="$(make_sample_jar)"
-    trace_r8 "$R8JAR" "$HELLO"
+    build_corpus "$HELLO"
+    trace_r8 "$R8JAR"
     link_snapshot com.android.tools.r8.R8 "$R8JAR" r8-snapshot
-    echo "--- smoke: version ---"
-    "$OUT/r8-snapshot" --version
-    echo "--- smoke: shrink hello.jar ---"
-    rm -f "$SAMPLE/r8-smoke.jar"
-    "$OUT/r8-snapshot" --lib "$ANDROID_HOME/platforms/android-35/android.jar" \
-      --min-api 24 --pg-conf "$SAMPLE/rules.pro" \
-      --output "$SAMPLE/r8-smoke.jar" "$HELLO"
-    ls -la "$SAMPLE/r8-smoke.jar"
+    TOOL=r8 WORK="$WORK" OUT="$OUT" bash scripts/smoke-snapshot.sh
     ;;
   kotlinc)
     KDIR="$(fetch_kotlinc)"
