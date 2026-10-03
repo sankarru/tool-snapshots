@@ -72,7 +72,6 @@ build_r8_source() {
   WORK="$WORK" JAVA_BIN="$GRAAL_BIN" \
     ANDROID_SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT:-}}" \
     bash scripts/build-r8-source.sh
-  "$JAVA_HOME/bin/java" -jar "$WORK/r8-src.jar" --version
 }
 
 link_r8_snapshot() { # $1 = d8|r8
