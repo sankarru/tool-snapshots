@@ -47,6 +47,7 @@ fetch_source() {
   # before the cache check so a reused checkout still knows its revision.
   sha="$(curl -sSfL "$R8_REPO_URL/+log/refs/heads/$R8_REF?format=JSON" 2>/dev/null |
          tr -d ' \n' | sed -n 's/.*"log":\[{"commit":"\([0-9a-f]*\)".*/\1/p' || true)"
+  mkdir -p "$BASE"
   echo "${sha:-unknown}" > "$BASE/source-sha.txt"
   if [ -d "$SRC" ] && [ -f "$SRC/settings.gradle.kts" ]; then
     say "source already present: $SRC (sha ${sha:-unknown})"
