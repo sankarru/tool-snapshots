@@ -48,6 +48,12 @@ COMMON_OPTS=(
   --no-fallback
   -H:+ReportExceptionStackTraces
   -H:-CheckToolchain
+  # Default to the ARMv8-A baseline instead of whatever the build host happens
+  # to support: the runner has LSE atomics and generates casal/ldadd for them,
+  # which makes the image refuse to start on any machine without ARMv8.1 (a
+  # plain qemu/aarch64 VM, some older phones). Every arm64 Android device and
+  # every Mac has the baseline.
+  -march=armv8-a
   # Resources R8 loads through the class loader at run time. `resources/.*`
   # covers api_database.ser, hidden.api.txt, hidden.jar.txt and
   # missing.api.txt; the version file sits at the root of the jar.
