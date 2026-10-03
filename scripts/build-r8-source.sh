@@ -35,6 +35,12 @@ DL="$BASE/dl"
 
 say() { echo "[r8-src] $*"; }
 
+# googlesource and storage.googleapis.com both return 503 under CI load, and a
+# tarball that half-downloaded is worse than one that never started. Retry with
+# backoff on every transient failure, including connection resets.
+CURL=(curl -sSfL --retry 8 --retry-delay 5 --retry-max-time 300
+      --retry-all-errors --connect-timeout 30)
+
 # The module source sets that make up the shipped jar. `main` is the compiler,
 # the rest are libraries it links against.
 # library_desugar is deliberately absent: it is the desugared-library payload
@@ -45,7 +51,7 @@ fetch_source() {
   local sha
   # Record which upstream commit this is, for --version and the report. Done
   # before the cache check so a reused checkout still knows its revision.
-  sha="$(curl -sSfL "$R8_REPO_URL/+log/refs/heads/$R8_REF?format=JSON" 2>/dev/null |
+  sha="$("${CURL[@]}" "$R8_REPO_URL/+log/refs/heads/$R8_REF?format=JSON" 2>/dev/null |
          tr -d ' \n' | sed -n 's/.*"log":\[{"commit":"\([0-9a-f]*\)".*/\1/p' || true)"
   mkdir -p "$BASE"
   echo "${sha:-unknown}" > "$BASE/source-sha.txt"
@@ -58,7 +64,7 @@ fetch_source() {
   # gitiles serves a tar of the tree for any ref; no git, no clone.
   local url="$R8_REPO_URL/+archive/refs/heads/$R8_REF.tar.gz"
   say "fetching $url"
-  curl -sSfL --retry 3 --retry-delay 2 -o "$tgz.part" "$url"
+  "${CURL[@]}" -o "$tgz.part" "$url"
   mv "$tgz.part" "$tgz"
   rm -rf "$SRC"; mkdir -p "$SRC"
   # The archive has no top-level directory; reject entries that try to escape
@@ -193,7 +199,7 @@ fetch_deps() {
         dst="$DEPS/$base"
         # NB: no `unzip | grep -q` here. With pipefail, grep exiting early makes
         # unzip die on SIGPIPE and the whole test report failure.
-        if curl -sSfL --retry 3 --retry-delay 2 -o "$tmp" \
+        if "${CURL[@]}" -o "$tmp" \
              "$(repo_url "$group")/$path.jar" 2>/dev/null; then
           unzip -Z1 "$tmp" > "$tmp.list" 2>/dev/null || true
           if grep -q '\.class$' "$tmp.list"; then
@@ -203,7 +209,7 @@ fetch_deps() {
           mv "$tmp" "$stub"
         fi
         rm -f "$tmp" "$tmp.list"
-        if curl -sSfL --retry 3 --retry-delay 2 -o "$tmp" \
+        if "${CURL[@]}" -o "$tmp" \
              "$(repo_url "$group")/$path.aar" 2>/dev/null; then
           unzip -p "$tmp" classes.jar > "$tmp.cj" 2>/dev/null || true
           if grep -aq 'class' "$tmp.cj"; then
@@ -249,7 +255,7 @@ gen_protos() {
   protoc="$DEPS/protoc-$ver.exe"
   if [ ! -x "$protoc" ]; then
     say "fetching protoc $ver ($arch)"
-    curl -sSfL --retry 3 -o "$protoc" \
+    "${CURL[@]}" -o "$protoc" \
       "https://repo1.maven.org/maven2/com/google/protobuf/protoc/$ver/protoc-$ver-$arch.exe"
     chmod +x "$protoc"
   fi
@@ -355,7 +361,7 @@ fetch_api_database() {
   tgz="$DL/api_database.tar.gz"
   if [ ! -f "$tgz" ]; then
     say "fetching api database $sha from storage.googleapis.com/r8-deps"
-    curl -sSfL --retry 3 -o "$tgz.part" "https://storage.googleapis.com/r8-deps/$sha"
+    "${CURL[@]}" -o "$tgz.part" "https://storage.googleapis.com/r8-deps/$sha"
     mv "$tgz.part" "$tgz"
   fi
   want="$sha"
