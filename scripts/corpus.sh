@@ -480,6 +480,49 @@ else
   make_compose_app
 fi
 
+# ------------------------------------------------------------ keep rules
+# The Proguard files the snapshots are exercised with. R8's CLI only speaks
+# --flag options, so everything else has to come in through --pg-conf; these
+# files are the R8 surface the validation runs cover (keep rules, attributes,
+# optimization/shrinking toggles, print outputs, -target, flatten).
+RULES="$WORK/rules"
+PRINTS_DIR="$CORPUS/prints"
+rm -rf "$RULES" "$PRINTS_DIR"; mkdir -p "$RULES" "$PRINTS_DIR"
+cat > "$RULES/base.pro" <<EOF
+-keep public class $CORPUS_NS.MainActivity { *; }
+-keep class $CORPUS_NS.data.** { *; }
+-keep,includedescriptorclasses @kotlinx.serialization.Serializable class ** { *; }
+-keepclasseswithmembers class ** { *** Companion; }
+-keep class **\$\$serializer { *; }
+-keepattributes *
+-dontnote **
+-dontwarn javax.annotation.**
+EOF
+mk_rules() { # mk_rules <name> <extra options...>
+  local name="$1"; shift
+  cp "$RULES/base.pro" "$RULES/$name.pro"
+  printf '%s\n' "$@" >> "$RULES/$name.pro"
+}
+# NOTE: the '**' class patterns must stay quoted: bash would glob them against
+# the cwd before they ever reach the parser.
+mk_rules noopt     -dontoptimize
+mk_rules noshrink  -dontshrink
+mk_rules noobf     -dontobfuscate
+mk_rules flatten   -flattenpackagehierarchy ''
+mk_rules library   -dontskipnonpubliclibraryclasses -keeppackagenames
+mk_rules target11  -target 11
+mk_rules missing   '-dontnote **'
+mk_rules missing-ok '-dontwarn **' -ignorewarnings
+cat > "$RULES/prints.pro" <<EOF
+$(cat "$RULES/base.pro")
+--printmapping $PRINTS_DIR/prints.map
+--printusage $PRINTS_DIR/prints.usage
+--printseeds $PRINTS_DIR/prints.seeds
+--printconfiguration $PRINTS_DIR/prints.configuration
+--whyareyoukeeping class $CORPUS_NS.MainActivity
+EOF
+say "keep rules: $(ls "$RULES" | tr '\n' ' ')"
+
 # ----------------------------------------------------------------- summary
 sort -u "$CORPUS/programs.txt" -o "$CORPUS/programs.txt"
 sort -u "$CORPUS/classpath.txt" -o "$CORPUS/classpath.txt"

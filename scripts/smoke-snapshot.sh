@@ -38,6 +38,12 @@ LIB_ARGS=(--lib "$ANDROID_LIB")
 rm -rf "$SMOKE"; mkdir -p "$SMOKE"
 : > "$REPORT"
 
+# The Proguard files come from corpus.sh. A missing one used to surface as an
+# opaque "Error in <path>" from R8, so check them up front.
+for pro in base prints noopt noshrink target11 flatten missing; do
+  [ -f "$WORK/rules/$pro.pro" ] || { echo "missing rules file: $WORK/rules/$pro.pro" >&2; exit 1; }
+done
+
 PRIMARY_FAILED=0
 DEGRADED=()
 smoke() { # smoke <label> <ok|fail|any> <primary|variant> <args...>
@@ -56,9 +62,16 @@ smoke() { # smoke <label> <ok|fail|any> <primary|variant> <args...>
       PRIMARY_FAILED=1
       verdict="FAILED"
     fi
-    echo "$label: rc=$rc $(grep -m1 -E 'Error|error:|Exception' "$log" | cut -c1-140)" >> "$REPORT"
+    {
+      echo "--- $label: rc=$rc"
+      grep -m 8 -A 4 -E 'Error|error:|Exception|Caused by' "$log" | cut -c1-160
+    } >> "$REPORT"
   fi
-  printf '%-9s %-18s %s\n' "$verdict" "$label" "$(grep -m1 -E 'Error|error:|Exception' "$log" | cut -c1-90)"
+  # Print the first error-ish lines on stdout too: the per-run log files live in
+  # the work dir and are not always around when a CI failure is being read.
+  local why
+  why="$(grep -m 3 -E 'Error|error:|Exception' "$log" | cut -c1-120 | tr '\n' '|')"
+  printf '%-9s %-18s %s\n' "$verdict" "$label" "$why"
 }
 
 echo "=== smoke $TOOL snapshot over $(wc -l < "$CORPUS/programs.txt") program inputs ==="
