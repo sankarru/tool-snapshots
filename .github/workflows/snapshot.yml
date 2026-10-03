@@ -74,6 +74,9 @@ jobs:
           # the snapshots are traced against, android-36 adds a second library
           # level for the resolution paths.
           "$SDKM" "platforms;android-35" "platforms;android-36"
+          # Show what actually landed: an interrupted unpack leaves a stub
+          # android.jar that later stages fail on in a very confusing way.
+          ls -la "$ANDROID_HOME"/platforms/*/android.jar
           df -h / | tail -1
 
       - name: Build + link + smoke-test

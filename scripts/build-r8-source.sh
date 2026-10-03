@@ -408,10 +408,29 @@ EOF
   say "jar: $JAR ($(du -h "$JAR" | cut -f1)), $(find "$CLASSES" -name '*.class' | wc -l) classes"
 }
 
+# The android.jar the JVM check dexes and shrinks against. Search the roots an
+# SDK can live in, and insist on a real jar: an interrupted sdkmanager unpack
+# leaves a stub android.jar behind, which R8 reports as a wall of missing
+# java.lang.Object errors rather than as a broken SDK.
+find_android_jar() {
+  local root
+  for root in "${ANDROID_SDK:-}" "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
+              "$HOME/Android/Sdk" "$HOME/.android/sdk" /usr/local/lib/android/sdk; do
+    [ -n "$root" ] || continue
+    find "$root/platforms" -maxdepth 2 -name android.jar -size +1M 2>/dev/null
+  done | sort -V | tail -1 || true
+}
+
 verify_on_jvm() {
   say "verifying on the JVM: D8/R8 --version and a dex run"
   local android_jar
-  android_jar="$(find "${ANDROID_SDK:-${ANDROID_HOME:-/nonexistent}}/platforms" -name android.jar 2>/dev/null | sort | tail -1 || true)"
+  android_jar="$(find_android_jar)"
+  if [ -n "$android_jar" ]; then
+    say "android lib: $android_jar ($(du -h "$android_jar" | cut -f1))"
+  else
+    echo "no android.jar found; set ANDROID_SDK" >&2
+    exit 1
+  fi
   local hello="$BASE/hello.jar" out="$BASE/hello-out"
   rm -rf "$out"; mkdir -p "$out" "$BASE/hello-src"
   cat > "$BASE/hello-src/Hello.java" <<'EOF'
@@ -429,8 +448,7 @@ EOF
   local run_cp="$JAR:$(dep_cp)"
   "$JAVA_BIN/java" -cp "$run_cp" com.android.tools.r8.D8 --version
   "$JAVA_BIN/java" -cp "$run_cp" com.android.tools.r8.R8 --version
-  local lib=()
-  [ -n "$android_jar" ] && lib=(--lib "$android_jar")
+  local lib=(--lib "$android_jar")
   "$JAVA_BIN/java" -cp "$run_cp" com.android.tools.r8.D8 "${lib[@]}" --release --min-api 24 \
     --output "$out" "$hello"
   ls "$out"
