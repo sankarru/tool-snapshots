@@ -91,6 +91,12 @@ for tool in $TOOLS; do
   start=$(date +%s)
   if "$NI" -cp "$CP" "${COMMON_OPTS[@]}" -o "$out" "$main" >> "$log" 2>&1; then
     say "$tool: ok in $(( $(date +%s) - start ))s, $(du -h "$out" | cut -f1)"
+    # native-image reports build-time reflection/resource gaps as warnings in its
+    # log; a silent log is how reachability problems stay invisible until a user
+    # hits them, so echo the summary counts here too.
+    n="$(grep -c "^Warning:" "$log" || true)"
+    say "$tool: $n native-image warning(s); first few:"
+    grep -m 5 -A 2 "^Warning:" "$log" | sed 's/^/    /' || true
   else
     say "$tool: FAILED (see $log)"
     tail -40 "$log"

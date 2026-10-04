@@ -42,12 +42,22 @@ public class Hello {
   }
 }
 EOF
-JAVAC="$(command -v javac || echo "$JAVA_HOME/bin/javac")"
+# A JDK is only needed to compile and package the hello-world input; the
+# snapshots themselves are self-contained. Find it wherever it lives instead of
+# insisting on JAVA_HOME, which need not be set.
+JAVAC="$(command -v javac || true)"
+if [ -z "$JAVAC" ]; then
+  [ -n "${JAVA_HOME:-}" ] || { echo "no javac and no JAVA_HOME" >&2; exit 1; }
+  JAVAC="$JAVA_HOME/bin/javac"
+fi
+JAR_BIN="$(dirname "$(readlink -f "$JAVAC")")/jar"
 "$JAVAC" -d "$S/classes" "$S/src/hello/Hello.java"
-"$JAVA_HOME/bin/jar" --create --file "$S/hello.jar" -C "$S/classes" .
+"$JAR_BIN" --create --file "$S/hello.jar" -C "$S/classes" .
 LIB="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" -path "*platforms/android-3*/android.jar" | sort | tail -1)"
 [ -n "$LIB" ] || { echo "no android.jar found under ANDROID_HOME" >&2; exit 1; }
 echo "lib: $LIB"
+# D8 wants the output directory to exist already (or a .zip/.jar path).
+mkdir -p "$S/dex-out"
 d8-snapshot --lib "$LIB" --min-api 24 --output "$S/dex-out" "$S/hello.jar"
 ls "$S/dex-out"
 echo "=== local snapshots work ==="

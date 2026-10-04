@@ -98,7 +98,7 @@ jobs:
             work-${{ matrix.tool }}/log-*.txt
             work-${{ matrix.tool }}/kotlinc-corpus.log
             work-${{ matrix.tool }}/corpus/report.txt
-            work-${{ matrix.tool }}/native/*.native-image.log
+            out/*.native-image.log
             work-${{ matrix.tool }}/smoke-*/*.txt
             work-${{ matrix.tool }}/rules/*.pro
             work-${{ matrix.tool }}/out/*-smoke-report.txt
