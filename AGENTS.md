@@ -18,6 +18,15 @@ instead of from a prebuilt jar:
 Consumers: [sankarru/acs](https://github.com/sankarru/acs) runs them as
 `acs <project> --snapshot` for the D8 and R8 roles.
 
+Two acs release paths now run end to end through the images: compose-app
+(715,086 B with code + resource shrinking, R8 49.7s) and flutter-app
+(25,542,175 B, R8 49.7s on the snapshot vs 113.9s on build-tools 9.2.4, same
+byte size from both). The flutter one is the interesting one for this repo: its
+graph is **Kotlin-heavy AndroidX** (`lifecycle:*:2.7.0`, `window-core`'s size
+classes, `window-java`), so it is the path that would catch a regression in the
+Kotlin half of `CLASS_DIRS` — the half whose omission caused the resource-shrinker
+failure below.
+
 ## Commands
 
 ```sh
@@ -94,6 +103,13 @@ it. Coverage for that path is the acs release build with
 `[build] shrink_resources = true` plus `--snapshot` — do that after any change
 to packaging or to the resource-shrinker classes, and install the APK on
 `emulator-5554` before calling it done.
+
+Run it for **both** templates when packaging changed. They fail differently and
+for unrelated reasons: compose-app exercises the R8 resource API and reports
+`Resources$NotFoundException` if the shrunk table is wrong, while flutter-app
+exercises a far larger Kotlin program input and dies earlier and louder, in
+resolution or with `MissingClasses`. A green compose run says nothing about
+flutter's graph, and the reverse is nearly as true.
 
 ## Traps
 
