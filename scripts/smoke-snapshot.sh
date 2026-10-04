@@ -64,13 +64,16 @@ smoke() { # smoke <label> <ok|fail|any> <primary|variant> <args...>
     fi
     {
       echo "--- $label: rc=$rc"
-      grep -m 8 -A 4 -E 'Error|error:|Exception|Caused by' "$log" | cut -c1-160
-    } >> "$REPORT"
+      # `|| true`: a run can fail without printing anything grep-able, and this
+      # report must not become the thing that aborts the smoke run.
+      grep -m 8 -A 4 -E 'Error|error:|Exception|Caused by' "$log" || true
+    } | cut -c1-160 >> "$REPORT"
   fi
   # Print the first error-ish lines on stdout too: the per-run log files live in
   # the work dir and are not always around when a CI failure is being read.
   local why
-  why="$(grep -m 3 -E 'Error|error:|Exception' "$log" | cut -c1-120 | tr '\n' '|')"
+  why="$({ grep -m 3 -E 'Error|error:|Exception' "$log" || true; } |
+         cut -c1-120 | tr '\n' '|')"
   printf '%-9s %-18s %s\n' "$verdict" "$label" "$why"
 }
 
@@ -117,8 +120,10 @@ else
     --pg-conf "$WORK/rules/prints.pro" --output "$SMOKE/prints.jar" "${PROGS_SAMPLES[@]}"
   smoke shrink-noopt ok variant --release --min-api 24 "${LIB_ARGS[@]}" "${CP_ARGS[@]}" \
     --pg-conf "$WORK/rules/noopt.pro" --output "$SMOKE/noopt.jar" "${PROGS_SAMPLES[@]}"
+  # Same program inputs as shrink-corpus, with shrinking off: the pair is what
+  # proves the image really shrinks instead of just repackaging.
   smoke shrink-noshrink ok variant --release --min-api 24 "${LIB_ARGS[@]}" "${CP_ARGS[@]}" \
-    --pg-conf "$WORK/rules/noshrink.pro" --output "$SMOKE/noshrink.jar" "${PROGS_SAMPLES[@]}"
+    --pg-conf "$WORK/rules/noshrink.pro" --output "$SMOKE/noshrink.jar" "${PROGS_ALL[@]}"
   smoke shrink-target11 ok variant --release --min-api 24 "${LIB_ARGS[@]}" "${CP_ARGS[@]}" \
     --pg-conf "$WORK/rules/target11.pro" --output "$SMOKE/t11.jar" "${PROGS_SAMPLES[@]}"
   mkdir -p "$SMOKE/classfile"
@@ -130,6 +135,15 @@ else
   smoke shrink-broken-input any variant --release --min-api 24 "${LIB_ARGS[@]}" \
     --pg-conf "$WORK/rules/missing.pro" --output "$SMOKE/broken.jar" \
     "$CORPUS/samples/broken.jar"
+fi
+
+if [ "$TOOL" = r8 ] && [ -f "$SMOKE/full.jar" ] && [ -f "$SMOKE/noshrink.jar" ]; then
+  shrunk=$(stat -c %s "$SMOKE/full.jar"); kept=$(stat -c %s "$SMOKE/noshrink.jar")
+  echo "shrink effectiveness: shrunk ${shrunk}B vs -dontshrink ${kept}B" | tee -a "$REPORT"
+  if [ "$shrunk" -ge "$kept" ]; then
+    echo "shrunk output is not smaller than the -dontshrink output" >> "$REPORT"
+    DEGRADED+=("shrink-effectiveness")
+  fi
 fi
 
 if [ "${#DEGRADED[@]}" -gt 0 ]; then

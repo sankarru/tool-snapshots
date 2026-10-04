@@ -288,6 +288,21 @@ COMPOSE_LIBS=(
   "https://dl.google.com/dl/android/maven2/androidx/compose/foundation/foundation-layout-android/1.7.6/foundation-layout-android-1.7.6.aar"
   "https://dl.google.com/dl/android/maven2/androidx/compose/foundation/foundation-android/1.7.6/foundation-android-1.7.6.aar"
   "https://dl.google.com/dl/android/maven2/androidx/compose/material3/material3-android/1.3.2/material3-android-1.3.2.aar"
+  # Keeping the corpus' composable entry points means R8 has to resolve
+  # everything their signatures mention, so the classpath has to be complete
+  # for the part of Compose they touch: without animation/ui-graphics the
+  # shrink runs die with "Missing class androidx.compose.animation.core.*".
+  "https://dl.google.com/dl/android/maven2/androidx/compose/animation/animation-android/1.7.6/animation-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/animation/animation-core-android/1.7.6/animation-core-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-graphics-android/1.7.6/ui-graphics-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/compose/ui/ui-text-android/1.7.6/ui-text-android-1.7.6.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-common-jvm/2.8.7/lifecycle-common-jvm-2.8.7.jar"
+  "https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-runtime-android/2.8.7/lifecycle-runtime-android-2.8.7.aar"
+  "https://dl.google.com/dl/android/maven2/androidx/core/core-ktx/1.13.1/core-ktx-1.13.1.aar"
+  # Kotlin-compiled bytecode carries org.jetbrains.annotations, and R8's
+  # enqueuer resolves them as real references: without this jar the shrink
+  # runs fail with "Missing class org.jetbrains.annotations.NotNull".
+  "https://repo1.maven.org/maven2/org/jetbrains/annotations/26.0.2/annotations-26.0.2.jar"
 )
 
 # The sources kotlinc + the Compose compiler plugin turn into the corpus's main
@@ -488,9 +503,16 @@ fi
 RULES="$WORK/rules"
 PRINTS_DIR="$CORPUS/prints"
 rm -rf "$RULES" "$PRINTS_DIR"; mkdir -p "$RULES" "$PRINTS_DIR"
+# Keep the corpus' public surface only: the composable entry points, the state
+# holders and the generated serializers. Everything else (the composable lambda
+# classes, the inline copies) is left for the shrinker, so a run over these
+# rules has real work to do and the shrunk jar is visibly smaller than the
+# -dontshrink one.
 cat > "$RULES/base.pro" <<EOF
--keep public class $CORPUS_NS.MainActivity { *; }
--keep class $CORPUS_NS.data.** { *; }
+-keep public class $CORPUS_NS.UiKt { *; }
+-keep class $CORPUS_NS.Item { *; }
+-keep class $CORPUS_NS.ItemStore { *; }
+-keep class $CORPUS_NS.Snapshot { *; }
 -keep,includedescriptorclasses @kotlinx.serialization.Serializable class ** { *; }
 -keepclasseswithmembers class ** { *** Companion; }
 -keep class **\$\$serializer { *; }
@@ -515,11 +537,11 @@ mk_rules missing   '-dontnote **'
 mk_rules missing-ok '-dontwarn **' -ignorewarnings
 cat > "$RULES/prints.pro" <<EOF
 $(cat "$RULES/base.pro")
---printmapping $PRINTS_DIR/prints.map
---printusage $PRINTS_DIR/prints.usage
---printseeds $PRINTS_DIR/prints.seeds
---printconfiguration $PRINTS_DIR/prints.configuration
---whyareyoukeeping class $CORPUS_NS.MainActivity
+-printmapping $PRINTS_DIR/prints.map
+-printusage $PRINTS_DIR/prints.usage
+-printseeds $PRINTS_DIR/prints.seeds
+-printconfiguration $PRINTS_DIR/prints.configuration
+-whyareyoukeeping class $CORPUS_NS.UiKt
 EOF
 say "keep rules: $(ls "$RULES" | tr '\n' ' ')"
 
