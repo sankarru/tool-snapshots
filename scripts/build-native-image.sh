@@ -47,6 +47,9 @@ mkdir -p "$OUT_DIR"
 COMMON_OPTS=(
   --no-fallback
   -H:+ReportExceptionStackTraces
+  # IncludeResources/CheckToolchain are still marked experimental; without this
+  # they only warn now, but a future GraalVM refuses them outright.
+  -H:+UnlockExperimentalVMOptions
   -H:-CheckToolchain
   # Default to the ARMv8-A baseline instead of whatever the build host happens
   # to support: the runner has LSE atomics and generates casal/ldadd for them,
