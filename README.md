@@ -34,6 +34,12 @@ Artifacts (7-day retention): `d8-snapshot-arm64`, `r8-snapshot-arm64`, plus a
 `<tool>-logs` artifact with the build log, native-image log, keep rules and
 per-run smoke logs.
 
+Main consumer: [sankarru/acs](https://github.com/sankarru/acs) runs these as
+`acs <project> --snapshot`, which covers the D8 role and both R8 roles (code
+shrinking and resource shrinking). See `AGENTS.md` for the interface contract
+(the `native-image-snapshot` marker and version line that acs validates and
+caches on) and for how to test a change.
+
 ## Local use (arm64 Linux, no limitations)
 
 The binaries are self-contained: no GraalVM, no wrapper, no paths baked in from
@@ -79,6 +85,7 @@ scripts/smoke-snapshot.sh       run the linked binary over that corpus
 scripts/smoke-compose.sh        snapshots vs. real Compose app bytecode
 scripts/install-local.sh        download + install the latest green binaries
 scripts/README.md               pipeline details, env vars, debugging table
+AGENTS.md                       agent memory: commands, rules, acs contract
 ```
 
 If a snapshot ever fails on an input where the JVM tool succeeds, the fix
