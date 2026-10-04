@@ -155,7 +155,9 @@ jobs:
             SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
           fi
           "$SDKM" "platforms;android-35"
-          echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
+          # No build-tools: apkanalyzer needs aapt, and Google's build-tools are
+          # x86_64-only binaries that cannot run on this arm64 runner. The
+          # smoketest reads the dex files directly instead.
 
       - name: Download d8 snapshot
         uses: actions/download-artifact@v4

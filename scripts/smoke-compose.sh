@@ -4,10 +4,10 @@
 #   1. resolve the app's dependencies (pure Gradle resolution, no plugins)
 #   2. compile compose-aot sources with kotlinc (compiler role only)
 #   3. shrink with r8-snapshot, dex with d8-snapshot
-#   4. verify MainActivity survives in both outputs via apkanalyzer
+#   4. verify MainActivity survives in both outputs
 #
 # Layout: ./compose-aot (sources+rules), ./dist (snapshots),
-#         ./tool-snapshots (this repo). Env: ANDROID_HOME, APKANALYZER,
+#         ./tool-snapshots (this repo). Env: ANDROID_HOME,
 #         KOTLIN_TAG (vX.Y.Z), JAVA_HOME (any JDK 17+).
 set -euo pipefail
 
@@ -20,15 +20,21 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -d "$REPO_ROOT/compose-aot" ]; then WS="$REPO_ROOT"; else WS="$(dirname "$REPO_ROOT")"; fi
 cd "$WS"
 
-# apkanalyzer is a launcher script that honors JAVA_HOME; fail fast with a
-# clear message instead of a cryptic tool error halfway through.
 "$JAVA_HOME/bin/java" -version >/dev/null 2>&1 \
   || { echo "JAVA_HOME is invalid: $JAVA_HOME" >&2; exit 1; }
 
 APP=compose-aot
 LIB="$ANDROID_HOME/platforms/android-35/android.jar"
-APK="${APKANALYZER:?set APKANALYZER}"
 chmod +x dist/d8-snapshot dist/r8-snapshot
+
+# Is the wanted type actually in this dex? apkanalyzer would answer that, but
+# it needs build-tools, and Google's build-tools only ship x86_64 aapt binaries,
+# which cannot run on the arm64 runner. Dex files keep every type descriptor in
+# their string table as plain MUTF-8, so a substring match over the file is an
+# equivalent check with no extra dependency.
+dex_has_class() { # dex_has_class <dex file> <com.example.Foo>
+  grep -aq "L$(echo "$2" | tr '.' '/');" "$1"
+}
 [ -f "$LIB" ] || { echo "missing $LIB" >&2; exit 1; }
 
 echo "--- 1. resolve dependencies (no Android/R8/D8 plugins) ---"
@@ -80,7 +86,7 @@ echo "--- 5a. d8-snapshot: dex app classes ---"
 rm -rf smoke/d8-out && mkdir -p smoke/d8-out
 dist/d8-snapshot --lib "$LIB" "${CP_ARGS[@]}" \
   --min-api 24 --output smoke/d8-out smoke/app.jar
-"$APK" dex packages smoke/d8-out/classes.dex | grep 'com.example.aotmin.MainActivity'
+dex_has_class smoke/d8-out/classes.dex com.example.aotmin.MainActivity
 echo "D8-OK: MainActivity present in snapshot-dexed classes.dex"
 
 echo "--- 5b. r8-snapshot: shrink app classes with app rules ---"
@@ -89,7 +95,7 @@ dist/r8-snapshot --lib "$LIB" "${CP_ARGS[@]}" \
   --min-api 24 --pg-conf "$APP/app/proguard-rules.pro" \
   --output smoke/r8-out.zip smoke/app.jar
 unzip -p smoke/r8-out.zip classes.dex > smoke/r8-classes.dex
-"$APK" dex packages smoke/r8-classes.dex | grep 'com.example.aotmin.MainActivity'
+dex_has_class smoke/r8-classes.dex com.example.aotmin.MainActivity
 echo "R8-OK: MainActivity present after snapshot shrink"
 
 echo "=== compose smoketest passed (snapshots only) ==="
