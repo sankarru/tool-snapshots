@@ -39,9 +39,10 @@ Compiles the compiler. Steps, in order:
 | `fetch_deps` | parses `gradle/libs.versions.toml` + the selected modules' `build.gradle.kts`, downloads Maven/Google jars, AAR `classes.jar`s, `-jvm` variants, drops Android metadata stubs |
 | `fetch_api_database` | `third_party/api_database/api_database.tar.gz.sha1` names an object in `storage.googleapis.com/r8-deps`; SHA1-verified, extracted to `resources/api_database.ser` |
 | `gen_protos` | `protoc` (downloaded, arch-matched) for the keepanno + keepradius protos |
-| `compile_kotlin` | 36 `.kt` files (keepanno 27, resourceshrinker 9) with `kotlin-compiler-embeddable` |
-| `compile_r8` | 3497 `.java` files, `javac --release 17` |
-| `package_r8` | jar + `src/main/resources` + generated `r8-version.properties` |
+| `compile_kotlin` | 36 `.kt` files (keepanno 27, resourceshrinker 9) with `kotlin-compiler-embeddable`, output in `classes-kotlin/` |
+| `compile_r8` | 3497 `.java` files, `javac --release 17`, output in `classes/` |
+| `package_r8` | jars **every** entry of `CLASS_DIRS` (`classes/` + `classes-kotlin/`) + `src/main/resources` + generated `r8-version.properties`, then audits the jar |
+| `audit_jar_class_files` | every `*.class` a compiler wrote must be readable from the jar, or the build fails |
 | `verify_on_jvm` | `D8/R8 --version`, a dex run and a shrink run on a generated hello-world |
 
 Modules compiled: `main utils assistant keepradius keepanno resourceshrinker`.
@@ -50,6 +51,17 @@ and is the desugared-library payload, not part of the compiler jar.
 
 Env: `WORK` (required), `JAVA_BIN`, `R8_REPO_URL`, `R8_REF` (default `main`),
 `R8_JAVA_RELEASE` (default `17`). Takes ~4.5 min from cold on one core.
+
+`CLASS_DIRS` exists because R8 is not all Java: `keepanno` and `resourceshrinker`
+are Kotlin, and packaging only `classes/` produced a jar that answered
+`--version`, dexed and shrank perfectly, then died with
+`NoClassDefFoundError: com.android.tools.r8.resourceshrinker.usages.AppCompat`
+the moment resource shrinking ran (`R8Command$ResourceShrinkerMapStringConsumer`
+reads it while wiring the map consumer). Nothing else in the pipeline noticed,
+which is why the packaging step now audits itself: an absent class is a build
+failure here, not a surprise in someone else's app. Adding a language, a module
+or a new output directory means adding it to `CLASS_DIRS`, and the audit is what
+tells you that you forgot.
 
 `r8-version.properties` carries the source sha, so a snapshot reports the
 upstream commit it was built from:

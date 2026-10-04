@@ -23,7 +23,9 @@ Actions → `tool-snapshots` → Run workflow. Inputs:
 Jobs on `ubuntu-24.04-arm` with GraalVM 25:
 
 - `snapshot d8`, `snapshot r8` — build R8 from source, link, smoke-test over a
-  Compose corpus, upload `<tool>-snapshot-arm64`.
+  Compose corpus, upload `<tool>-snapshot-arm64`. Both roles of both tools come
+  out of one source build: `d8` and `r8` are the same jar with different entry
+  points, so the D8 image is the same code as the R8 image.
 - `snapshot kotlinc` — unchanged legacy path: traced with the agent.
 - `smoke snapshots on compose-aot` — runs both snapshots against real Compose
   bytecode from `sankarru/compose-aot`.

@@ -29,6 +29,13 @@ BASE="$WORK/r8-src"
 SRC="$BASE/src"
 DEPS="$BASE/deps"
 CLASSES="$BASE/classes"
+# Every directory a compiler writes class files into. The jar has to carry all
+# of them: R8's keepanno and resourceshrinker modules are Kotlin, and dropping
+# their output produced a compiler that passed every dex/shrink check and then
+# died with NoClassDefFoundError the moment resource shrinking asked for
+# com.android.tools.r8.resourceshrinker.usages.AppCompat. audit_jar_class_files
+# below turns that class of bug into a build failure instead.
+CLASS_DIRS=("$CLASSES" "$BASE/classes-kotlin")
 RES="$BASE/res"
 JAR="$WORK/r8-src.jar"
 DL="$BASE/dl"
@@ -405,13 +412,60 @@ EOF
     cp -r "$HERE/r8-overlay/META-INF" "$RES/"
   fi
   rm -f "$JAR"
-  ( cd "$CLASSES" && "$JAVA_BIN/jar" --create --file "$JAR" . )
+  local first=1 d
+  for d in "${CLASS_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    if [ "$first" = 1 ]; then
+      ( cd "$d" && "$JAVA_BIN/jar" --create --file "$JAR" . )
+      first=0
+    else
+      ( cd "$d" && "$JAVA_BIN/jar" --update --file "$JAR" . )
+    fi
+  done
+  [ "$first" = 0 ] || { echo "no compiled classes to package" >&2; exit 1; }
   ( cd "$RES" && "$JAVA_BIN/jar" --update --file "$JAR" . )
   # R8 memory-maps the api database, so it has to be stored, not deflated.
   if [ -f "$RES/resources/api_database.ser" ]; then
     "$JAVA_BIN/jar" --update --file "$JAR" --no-compress -C "$RES" resources/api_database.ser
   fi
-  say "jar: $JAR ($(du -h "$JAR" | cut -f1)), $(find "$CLASSES" -name '*.class' | wc -l) classes"
+  say "jar: $JAR ($(du -h "$JAR" | cut -f1)), $(compiled_class_count) classes"
+  audit_jar_class_files
+}
+
+compiled_class_count() {
+  local d n=0
+  for d in "${CLASS_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    n=$((n + $(find "$d" -name '*.class' | wc -l)))
+  done
+  printf '%s' "$n"
+}
+
+# Every compiled class must be readable from the jar. A jar that is missing
+# part of its own output still passes --version and still dexes and shrinks
+# fine, so nothing else in this pipeline notices; the omission only surfaces
+# when some rarely taken branch finally touches the absent class. This check
+# is what keeps that from being discovered by a user instead of by the build.
+audit_jar_class_files() {
+  local listing="$BASE/jar-listing.txt" compiled="$BASE/compiled-classes.txt"
+  unzip -Z1 "$JAR" | sed 's|/$||' | LC_ALL=C sort -u > "$listing"
+  : > "$compiled"
+  local d
+  for d in "${CLASS_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    ( cd "$d" && find . -name '*.class' -printf '%P\n' ) >> "$compiled"
+  done
+  LC_ALL=C sort -u -o "$compiled" "$compiled"
+  local missing
+  missing="$(LC_ALL=C comm -23 "$compiled" "$listing")"
+  if [ -n "$missing" ]; then
+    echo "ERROR: $(printf '%s\n' "$missing" | wc -l) compiled classes are missing from $JAR:" >&2
+    printf '%s\n' "$missing" | head -20 | sed 's/^/  /' >&2
+    [ "$(printf '%s\n' "$missing" | wc -l)" -le 20 ] ||
+      echo "  ... (truncated)" >&2
+    exit 1
+  fi
+  say "jar audit: all $(wc -l < "$compiled") compiled classes present"
 }
 
 # The android.jar the JVM check dexes and shrinks against. Search the roots an
