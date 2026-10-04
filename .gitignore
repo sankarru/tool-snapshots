@@ -14,3 +14,7 @@ smoke/cp/
 smoke/classes/
 smoke/d8-out/
 smoke/*.zip
+ksp/fetch-deps/.gradle/
+ksp/fetch-deps/build/
+smoke/*.jar
+smoke/*-classes.dex
