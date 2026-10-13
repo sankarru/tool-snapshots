@@ -287,13 +287,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install SDK platform (android.jar only; no build-tools needed)
+      - name: Install SDK platform + build-tools (apkanalyzer needs aapt)
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKM" ]; then
             SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
           fi
-          "$SDKM" "platforms;android-35"
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
           echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
 
       - name: Fetch snapshots from the release
@@ -315,10 +315,11 @@ jobs:
         run: bash tool-snapshots/scripts/smoke-compose.sh
 
   # Promote the prerelease to a stable, "latest" release only when everything
-  # that ran succeeded. install-local.sh looks up the latest stable release.
+  # that ran succeeded -- including the compose-aot end-to-end smoke.
+  # install-local.sh looks up the latest stable release.
   finalize:
     name: finalize release
-    needs: [release, snapshot, acs, bundle]
+    needs: [release, snapshot, acs, bundle, smoke-compose]
     if: success()
     runs-on: ubuntu-24.04-arm
     steps:
