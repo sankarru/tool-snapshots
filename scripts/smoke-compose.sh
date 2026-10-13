@@ -4,10 +4,18 @@
 #   1. resolve the app's dependencies (pure Gradle resolution, no plugins)
 #   2. compile compose-aot sources with kotlinc (compiler role only)
 #   3. shrink with r8-snapshot, dex with d8-snapshot
-#   4. verify MainActivity survives in both outputs via apkanalyzer
+#   4. verify MainActivity survives in both outputs
+#
+# The verification reads the dex string pool directly. The class descriptor is
+# stored verbatim, so grep is exact, and unlike apkanalyzer it does not depend
+# on the Android SDK / cmdline-tools build (apkanalyzer 16.0 dies with
+# `ERROR: Provider "jar" not found` on stock JDKs when it opens an archive via
+# com.android.utils.FileUtils.createZipFilesystem -> FileSystems.newFileSystem
+# with a `jar:` URI, which made this gate fail for reasons unrelated to the
+# snapshots).
 #
 # Layout: ./compose-aot (sources+rules), ./dist (snapshots),
-#         ./tool-snapshots (this repo). Env: ANDROID_HOME, APKANALYZER,
+#         ./tool-snapshots (this repo). Env: ANDROID_HOME,
 #         KOTLIN_TAG (vX.Y.Z), JAVA_HOME (any JDK 17+).
 set -euo pipefail
 
@@ -20,14 +28,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -d "$REPO_ROOT/compose-aot" ]; then WS="$REPO_ROOT"; else WS="$(dirname "$REPO_ROOT")"; fi
 cd "$WS"
 
-# apkanalyzer is a launcher script that honors JAVA_HOME; fail fast with a
-# clear message instead of a cryptic tool error halfway through.
+# Fail fast with a clear message instead of a cryptic error halfway through.
 "$JAVA_HOME/bin/java" -version >/dev/null 2>&1 \
   || { echo "JAVA_HOME is invalid: $JAVA_HOME" >&2; exit 1; }
 
 APP=compose-aot
 LIB="$ANDROID_HOME/platforms/android-35/android.jar"
-APK="${APKANALYZER:?set APKANALYZER}"
 chmod +x dist/d8-snapshot dist/r8-snapshot
 [ -f "$LIB" ] || { echo "missing $LIB" >&2; exit 1; }
 
@@ -80,7 +86,10 @@ echo "--- 5a. d8-snapshot: dex app classes ---"
 rm -rf smoke/d8-out && mkdir -p smoke/d8-out
 dist/d8-snapshot --lib "$LIB" "${CP_ARGS[@]}" \
   --min-api 24 --output smoke/d8-out smoke/app.jar
-"$APK" dex packages smoke/d8-out/classes.dex | grep 'com.example.aotmin.MainActivity'
+[ -f smoke/d8-out/classes.dex ] \
+  || { echo "d8-snapshot produced no classes.dex" >&2; exit 1; }
+grep -aq 'Lcom/example/aotmin/MainActivity;' smoke/d8-out/classes.dex \
+  || { echo "MainActivity missing from snapshot-dexed classes.dex" >&2; exit 1; }
 echo "D8-OK: MainActivity present in snapshot-dexed classes.dex"
 
 echo "--- 5b. r8-snapshot: shrink app classes with app rules ---"
@@ -88,8 +97,11 @@ rm -f smoke/r8-out.zip
 dist/r8-snapshot --lib "$LIB" "${CP_ARGS[@]}" \
   --min-api 24 --pg-conf "$APP/app/proguard-rules.pro" \
   --output smoke/r8-out.zip smoke/app.jar
+[ -f smoke/r8-out.zip ] \
+  || { echo "r8-snapshot produced no output" >&2; exit 1; }
 unzip -p smoke/r8-out.zip classes.dex > smoke/r8-classes.dex
-"$APK" dex packages smoke/r8-classes.dex | grep 'com.example.aotmin.MainActivity'
+grep -aq 'Lcom/example/aotmin/MainActivity;' smoke/r8-classes.dex \
+  || { echo "MainActivity missing from r8 snapshot output" >&2; exit 1; }
 echo "R8-OK: MainActivity present after snapshot shrink"
 
 echo "=== compose smoketest passed (snapshots only) ==="

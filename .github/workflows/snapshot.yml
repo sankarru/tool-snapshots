@@ -291,14 +291,13 @@ jobs:
         with:
           packages: platform-tools
 
-      - name: Install SDK platform + build-tools (apkanalyzer needs aapt)
+      - name: Install SDK platform (android.jar for d8/r8 --lib)
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKM" ]; then
             SDKM="$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/sdkmanager" | head -1)"
           fi
-          "$SDKM" "platforms;android-35" "build-tools;35.0.0"
-          echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
+          "$SDKM" "platforms;android-35"
 
       - name: Fetch snapshots from the release
         env:

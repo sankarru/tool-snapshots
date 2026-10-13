@@ -302,8 +302,13 @@ link_snapshot() {
     # JRT filesystem is patched via bytecode (CoreJrtFileSystem) to avoid
     # ProviderNotFound in native-image; no extra flag needed beyond URL protocol.
   fi
+  # GraalVM 25 targets armv8.1-a by default on AArch64, which makes LSE atomics
+  # mandatory; the resulting binaries SIGILL on pre-8.1 ARM hosts (the whole
+  # point of a portable bundle). -march=compatibility forces the armv8-a
+  # baseline instead (only FP + ASIMD required).
   "$NI" \
     -J-Xmx12g \
+    -march=compatibility \
     --no-fallback \
     --allow-incomplete-classpath \
     -H:ConfigurationFileDirectories="$META" \
