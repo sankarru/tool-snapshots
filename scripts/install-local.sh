@@ -5,11 +5,12 @@
 # Android SDK whose android.jar you pass via --lib ( dunk it from ANDROID_HOME).
 #
 # Usage:
-#   PREFIX=~/.local/bin bash scripts/install-local.sh        # latest green run
-#   RUN_ID=34896218148 bash scripts/install-local.sh         # a specific run
+#   PREFIX=~/.local/bin bash scripts/install-local.sh        # latest stable release
+#   TAG=snapshots-42 bash scripts/install-local.sh           # a specific release
 #   INSTALL_ACS=1 bash scripts/install-local.sh              # also install acs
 # Env: REPO (default sankarru/tool-snapshots), TOOLS (default "d8 r8"),
-#      INSTALL_ACS (default 0; 1 pulls `acs` + both snapshots from the bundle).
+#      TAG (default: the latest stable release), INSTALL_ACS (default 0; 1
+#      pulls `acs` + both snapshots from the bundle).
 set -euo pipefail
 
 REPO="${REPO:-sankarru/tool-snapshots}"
@@ -17,17 +18,23 @@ PREFIX="${PREFIX:-$HOME/.local/bin}"
 TOOLS="${TOOLS:-d8 r8}"
 INSTALL_ACS="${INSTALL_ACS:-0}"
 
-if [ -z "${RUN_ID:-}" ]; then
-  RUN_ID="$(gh run list --repo "$REPO" --workflow snapshot.yml \
-    --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+# Binaries live as release assets, not run artifacts (artifact storage is a
+# small account-wide quota; release assets are not metered by it). Prereleases
+# are deliberately skipped: a run only promotes its release to stable once every
+# job succeeded, so "latest stable" means "latest green".
+if [ -z "${TAG:-}" ]; then
+  TAG="$(gh release list --repo "$REPO" --exclude-pre-releases --limit 1 \
+    --json tagName --jq '.[0].tagName')"
 fi
-[ -n "${RUN_ID:-}" ] || { echo "no successful run found" >&2; exit 1; }
-echo "installing from run $RUN_ID -> $PREFIX"
+[ -n "${TAG:-}" ] || { echo "no stable release found in $REPO" >&2; exit 1; }
+echo "installing from release $TAG -> $PREFIX"
 mkdir -p "$PREFIX" /tmp/snap-local
 for t in $TOOLS; do
-  rm -rf "/tmp/snap-local/$t" && mkdir -p "/tmp/snap-local/$t"
-  gh run download "$RUN_ID" --repo "$REPO" -n "$t-snapshot-arm64" -D "/tmp/snap-local/$t"
-  install -m755 "/tmp/snap-local/$t/$t-snapshot" "$PREFIX/$t-snapshot"
+  d="/tmp/snap-local/$t"
+  rm -rf "$d" && mkdir -p "$d"
+  gh release download "$TAG" --repo "$REPO" -p "$t-snapshot-arm64.tar.gz" -D "$d"
+  tar -xzf "$d/$t-snapshot-arm64.tar.gz" -C "$d"
+  install -m755 "$d/$t-snapshot" "$PREFIX/$t-snapshot"
 done
 
 if [ "$INSTALL_ACS" = "1" ]; then
@@ -36,7 +43,7 @@ if [ "$INSTALL_ACS" = "1" ]; then
   # the snapshots, so this is the recommended single step.
   echo "--- install acs + snapshots from the bundle ---"
   rm -rf /tmp/snap-bundle && mkdir -p /tmp/snap-bundle
-  gh run download "$RUN_ID" --repo "$REPO" -n acs-bundle-arm64 -D /tmp/snap-bundle
+  gh release download "$TAG" --repo "$REPO" -p 'acs-bundle-arm64.tar.gz' -D /tmp/snap-bundle
   tar -xzf /tmp/snap-bundle/acs-bundle-arm64.tar.gz -C "$PREFIX" acs d8-snapshot r8-snapshot
   "$PREFIX/acs" --version
   echo "run acs --snapshot with: SNAPSHOT_HOME=$PREFIX"

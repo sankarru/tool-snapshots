@@ -17,15 +17,25 @@ Actions → `tool-snapshots` → Run workflow. Inputs:
 | `acs_ref` | `main` | acs git ref (branch/tag/sha) to build into the bundle |
 | `kotlin_version` | `v2.2.20` | kotlinc release tag |
 | `r8_version` | `8.13.23` | R8 version from Google Maven |
+| `release_tag` | `snapshots-<run number>` | release to publish the binaries to |
 
-Runners are `ubuntu-24.04-arm` (arm64). Artifacts (7-day retention):
+Runners are `ubuntu-24.04-arm` (arm64). Binaries are published as **GitHub
+Release assets**, not workflow artifacts: Actions artifact storage is a small
+account-wide quota (500 MB on the Free plan) that this repo does not control,
+whereas release assets are not metered by it — and a release outlives the
+7-day artifact retention anyway.
 
-* `<tool>-snapshot-arm64` — one per snapshot, plus its `-meta` trace.
-* `acs-arm64` — the `acs` binary on its own.
-* `acs-bundle-arm64` — **one tarball with `acs` + `d8-snapshot` + `r8-snapshot`
-  side by side** (nothing to install: untar a directory and run `acs` from it,
-  or point `SNAPSHOT_HOME` at it). Built only when `tools` contains both `d8`
-  and `r8`.
+The release starts as a **prerelease** and is promoted to stable/latest by the
+`finalize` job only if every requested job succeeded, so "latest stable" always
+means "latest green". Assets:
+
+* `<tool>-snapshot-arm64.tar.gz` — the binary and its `<tool>-snapshot-meta/`
+  trace.
+* `acs` — the `acs` binary on its own.
+* `acs-bundle-arm64.tar.gz` — **`acs` + `d8-snapshot` + `r8-snapshot` side by
+  side** (nothing to install: untar a directory and run `acs` from it, or point
+  `SNAPSHOT_HOME` at it), plus a `.sha256`. Built only when `tools` contains
+  both `d8` and `r8`.
 
 ### Required secret: `ACS_REPO_TOKEN`
 
@@ -45,8 +55,9 @@ both self-identify as native-image snapshots. The bundle is exactly the layout
 that satisfies it:
 
 ```sh
-# download from the latest green run, e.g. with gh:
-gh run download --repo sankarru/tool-snapshots -n acs-bundle-arm64 -D /tmp/acs-bundle
+# download from the latest green release, e.g. with gh:
+gh release download --repo sankarru/tool-snapshots \
+  --pattern acs-bundle-arm64.tar.gz -D /tmp/acs-bundle
 mkdir -p ~/tool-bundle && tar -xzf /tmp/acs-bundle/acs-bundle-arm64.tar.gz -C ~/tool-bundle
 # ~/tool-bundle/{acs,d8-snapshot,r8-snapshot}
 export SNAPSHOT_HOME=$HOME/tool-bundle
@@ -89,7 +100,7 @@ hardcoded paths on the using machine. Install the latest green build:
 
 ```sh
 bash scripts/install-local.sh
-# RUN_ID=34896218148 PREFIX=~/bin bash scripts/install-local.sh
+# TAG=snapshots-42 PREFIX=~/bin bash scripts/install-local.sh
 # INSTALL_ACS=1 bash scripts/install-local.sh   # also install `acs`
 ```
 

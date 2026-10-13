@@ -19,13 +19,48 @@ on:
         description: 'R8 version from Google Maven (e.g. 8.13.23)'
         required: true
         default: '8.13.23'
+      release_tag:
+        description: 'Release tag to publish to (default: snapshots-<run number>)'
+        required: false
+        default: ''
 
+# Binaries are published as RELEASE ASSETS, not workflow artifacts. Actions
+# artifact storage is a small account-wide quota (500 MB on the Free plan) that
+# this repo does not control; release assets are not metered by it. The release
+# also outlives the 7-day artifact retention, which is what install-local.sh
+# wants anyway.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  release:
+    name: create release
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.release_tag }}"
+          [ -n "$TAG" ] || TAG="snapshots-${{ github.run_number }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+          else
+            # Created as a prerelease; `finalize` promotes it to latest only when
+            # every requested job succeeded, so install-local's "latest stable"
+            # lookup can never pick a half-finished run.
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "tool snapshots $TAG" --prerelease \
+              --notes "d8/r8/kotlinc native-image snapshots + acs. Auto-published by workflow run ${{ github.run_number }}."
+          fi
+
   snapshot:
     name: snapshot ${{ matrix.tool }} (arm64)
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -84,14 +119,17 @@ jobs:
           R8_VERSION: ${{ inputs.r8_version }}
         run: bash scripts/snapshot.sh
 
-      - name: Upload snapshot binary + trace metadata
+      # `out/` holds the binary and its <tool>-snapshot-meta/ directory; tar them
+      # together so one release asset carries both.
+      - name: Package + publish snapshot
         if: steps.gate.outputs.run == 'yes'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.tool }}-snapshot-arm64
-          path: out/
-          if-no-files-found: error
-          retention-days: 7
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar -czf "${{ matrix.tool }}-snapshot-arm64.tar.gz" -C out .
+          gh release upload "${{ needs.release.outputs.tag }}" \
+            "${{ matrix.tool }}-snapshot-arm64.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
   # ---------------------------------------------------------------------------
   # acs: the build tool itself, cross-repo. acs is pure Rust (no build.rs, no
@@ -101,6 +139,7 @@ jobs:
   # ---------------------------------------------------------------------------
   acs:
     name: build acs (arm64)
+    needs: release
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
@@ -137,6 +176,8 @@ jobs:
 
       - name: Cache cargo registry
         uses: actions/cache@v4
+        # Best-effort: never let a cache-quota hiccup fail the build.
+        continue-on-error: true
         with:
           path: ~/.cargo/registry
           key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('acs/Cargo.lock') }}
@@ -157,51 +198,45 @@ jobs:
           ./acs/target/release/acs --version
           ./acs/target/release/acs --help >/dev/null
 
-      - name: Upload acs binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: acs-arm64
-          path: acs/target/release/acs
-          if-no-files-found: error
-          retention-days: 7
+      - name: Publish acs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release.outputs.tag }}" \
+            acs/target/release/acs --repo "$GITHUB_REPOSITORY" --clobber
 
   bundle:
     name: bundle acs + d8 + r8 (arm64)
-    needs: [snapshot, acs]
+    needs: [release, snapshot, acs]
     # Only meaningful when both snapshots were built in this run.
     if: contains(inputs.tools, 'd8') && contains(inputs.tools, 'r8')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
-      - name: Download d8 snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: d8-snapshot-arm64
-          path: dist/d8
-
-      - name: Download r8 snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: r8-snapshot-arm64
-          path: dist/r8
-
-      - name: Download acs
-        uses: actions/download-artifact@v4
-        with:
-          name: acs-arm64
-          path: dist/acs
-
       # One flat directory so `acs --snapshot` finds the two snapshots beside
       # the binary it was launched from (it resolves them via snapshot_home /
       # $SNAPSHOT_HOME / ~/.local/bin / PATH, and both must self-identify as
       # native-image snapshots). Result: tar out and run, no install step.
+      - name: Fetch the pieces from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${{ needs.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            -p 'd8-snapshot-arm64.tar.gz' -p 'r8-snapshot-arm64.tar.gz' -p 'acs' \
+            -D dist
+          tar -xzf dist/d8-snapshot-arm64.tar.gz -C dist
+          tar -xzf dist/r8-snapshot-arm64.tar.gz -C dist
+
       - name: Assemble bundle
         run: |
           set -euo pipefail
           mkdir -p bundle
-          install -m755 dist/d8/d8-snapshot bundle/d8-snapshot
-          install -m755 dist/r8/r8-snapshot bundle/r8-snapshot
-          install -m755 dist/acs/acs        bundle/acs
+          install -m755 dist/d8-snapshot bundle/d8-snapshot
+          install -m755 dist/r8-snapshot bundle/r8-snapshot
+          install -m755 dist/acs         bundle/acs
           echo "--- smoke: the three binaries run ---"
           ./bundle/d8-snapshot --version
           ./bundle/r8-snapshot --version
@@ -212,19 +247,17 @@ jobs:
           tar -tzf acs-bundle-arm64.tar.gz
           ls -la
 
-      - name: Upload acs bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: acs-bundle-arm64
-          path: |
-            acs-bundle-arm64.tar.gz
-            acs-bundle-arm64.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 7
+      - name: Publish bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release.outputs.tag }}" \
+            acs-bundle-arm64.tar.gz acs-bundle-arm64.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
   smoke-compose:
     name: smoke snapshots on compose-aot (arm64)
-    needs: snapshot
+    needs: [release, snapshot]
     # Only meaningful when both snapshots were built in this run.
     if: contains(inputs.tools, 'd8') && contains(inputs.tools, 'r8')
     runs-on: ubuntu-24.04-arm
@@ -263,19 +296,35 @@ jobs:
           "$SDKM" "platforms;android-35"
           echo "APKANALYZER=$(find "$ANDROID_HOME" -path "*cmdline-tools*/bin/apkanalyzer" | head -1)" >> "$GITHUB_ENV"
 
-      - name: Download d8 snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: d8-snapshot-arm64
-          path: dist
-
-      - name: Download r8 snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: r8-snapshot-arm64
-          path: dist
+      - name: Fetch snapshots from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${{ needs.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            -p 'd8-snapshot-arm64.tar.gz' -p 'r8-snapshot-arm64.tar.gz' \
+            -D dist
+          tar -xzf dist/d8-snapshot-arm64.tar.gz -C dist
+          tar -xzf dist/r8-snapshot-arm64.tar.gz -C dist
 
       - name: Smoke snapshots over real Compose bytecode (snapshots only)
         env:
           KOTLIN_TAG: ${{ inputs.kotlin_version }}
         run: bash tool-snapshots/scripts/smoke-compose.sh
+
+  # Promote the prerelease to a stable, "latest" release only when everything
+  # that ran succeeded. install-local.sh looks up the latest stable release.
+  finalize:
+    name: finalize release
+    needs: [release, snapshot, acs, bundle]
+    if: success()
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${{ needs.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          echo "published ${{ needs.release.outputs.tag }}"
