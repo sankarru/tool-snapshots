@@ -4,6 +4,9 @@ GraalVM `native-image` AOT snapshots of the build tools themselves —
 `kotlinc`, R8, D8 — as instant-start native binaries, built in CI
 (GitHub Actions runners have the ~16 GB RAM native-image linking needs).
 
+The workflow also builds **`acs`** (the Rust build tool) and packs it together
+with the D8/R8 snapshots into a single, ready-to-run bundle.
+
 ## Run
 
 Actions → `tool-snapshots` → Run workflow. Inputs:
@@ -11,11 +14,45 @@ Actions → `tool-snapshots` → Run workflow. Inputs:
 | input | default | meaning |
 |---|---|---|
 | `tools` | `d8,r8` | comma list of `d8`, `r8`, `kotlinc` |
-| `arch` | `x64,arm64` | `ubuntu-latest` / `ubuntu-24.04-arm` runners |
+| `acs_ref` | `main` | acs git ref (branch/tag/sha) to build into the bundle |
 | `kotlin_version` | `v2.2.20` | kotlinc release tag |
 | `r8_version` | `8.13.23` | R8 version from Google Maven |
 
-Artifacts: `<tool>-snapshot-<arch>` binaries (7-day retention).
+Runners are `ubuntu-24.04-arm` (arm64). Artifacts (7-day retention):
+
+* `<tool>-snapshot-arm64` — one per snapshot, plus its `-meta` trace.
+* `acs-arm64` — the `acs` binary on its own.
+* `acs-bundle-arm64` — **one tarball with `acs` + `d8-snapshot` + `r8-snapshot`
+  side by side** (nothing to install: untar a directory and run `acs` from it,
+  or point `SNAPSHOT_HOME` at it). Built only when `tools` contains both `d8`
+  and `r8`.
+
+### Required secret: `ACS_REPO_TOKEN`
+
+`acs` lives in the private `sankarru/acs` repo, which the runner's
+`GITHUB_TOKEN` cannot read. Add a **fine-grained PAT with `Contents: Read` on
+`sankarru/acs`** as a repository secret named `ACS_REPO_TOKEN`
+(Settings → Secrets and variables → Actions → New repository secret). The
+`acs` job fails early with an explicit message if it is missing.
+
+## The bundle
+
+`acs --snapshot` runs D8 and R8 as the native images instead of
+`java -cp d8.jar`: no JVM start, no AppCDS/SCC, no build-tools jar. It resolves
+`d8-snapshot` / `r8-snapshot` from `[tools] snapshot_home`, then
+`$SNAPSHOT_HOME`, then `~/.local/bin`, then `PATH` — and refuses to run unless
+both self-identify as native-image snapshots. The bundle is exactly the layout
+that satisfies it:
+
+```sh
+# download from the latest green run, e.g. with gh:
+gh run download --repo sankarru/tool-snapshots -n acs-bundle-arm64 -D /tmp/acs-bundle
+mkdir -p ~/tool-bundle && tar -xzf /tmp/acs-bundle/acs-bundle-arm64.tar.gz -C ~/tool-bundle
+# ~/tool-bundle/{acs,d8-snapshot,r8-snapshot}
+export SNAPSHOT_HOME=$HOME/tool-bundle
+export ANDROID_HOME=$HOME/Android/Sdk
+~/tool-bundle/acs --snapshot --min-sdk 26 <project>
+```
 
 ## How it works (`scripts/snapshot.sh`)
 
@@ -30,6 +67,21 @@ Start with `d8,r8` (smallest closed-world surface). `kotlinc` is included
 but expected to need metadata iterations — the compiler leans on services,
 message bundles and plugins that only show up when exercised.
 
+### Building acs
+
+The `acs` job checks out the private repo (via `ACS_REPO_TOKEN`) and runs a
+plain release build:
+
+```sh
+cargo build --locked --release -p ca-e2e --config 'build.rustc-wrapper=""'
+```
+
+`--config 'build.rustc-wrapper=""'` disables the sccache wrapper acs's
+`.cargo/config.toml` sets (sccache is not installed on the runner); `--release`
+is the LLVM binary people ship; `--locked` refuses to silently re-resolve the
+committed `Cargo.lock`. acs is pure Rust — no `build.rs`, no native deps — so a
+nightly toolchain is the only requirement.
+
 ## Local use (arm64 Linux, no limitations)
 
 The snapshot binaries are self-contained: no GraalVM, no wrapper, no
@@ -38,11 +90,14 @@ hardcoded paths on the using machine. Install the latest green build:
 ```sh
 bash scripts/install-local.sh
 # RUN_ID=34896218148 PREFIX=~/bin bash scripts/install-local.sh
+# INSTALL_ACS=1 bash scripts/install-local.sh   # also install `acs`
 ```
 
 This puts `d8-snapshot` / `r8-snapshot` on your `PATH`, prints their
-versions, and dexes a hello-world jar end to end. Afterwards use them
-exactly like the JVM tools, pointing `--lib` at your own SDK:
+versions, and dexes a hello-world jar end to end. With `INSTALL_ACS=1` it
+extracts the bundle instead, so `acs` lands next to both snapshots and
+`SNAPSHOT_HOME=$PREFIX acs --snapshot …` just works. Afterwards use the
+snapshots exactly like the JVM tools, pointing `--lib` at your own SDK:
 
 ```sh
 export ANDROID_HOME=$HOME/Android/Sdk

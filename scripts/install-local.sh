@@ -7,12 +7,15 @@
 # Usage:
 #   PREFIX=~/.local/bin bash scripts/install-local.sh        # latest green run
 #   RUN_ID=34896218148 bash scripts/install-local.sh         # a specific run
-# Env: REPO (default sankarru/tool-snapshots), TOOLS (default "d8 r8").
+#   INSTALL_ACS=1 bash scripts/install-local.sh              # also install acs
+# Env: REPO (default sankarru/tool-snapshots), TOOLS (default "d8 r8"),
+#      INSTALL_ACS (default 0; 1 pulls `acs` + both snapshots from the bundle).
 set -euo pipefail
 
 REPO="${REPO:-sankarru/tool-snapshots}"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 TOOLS="${TOOLS:-d8 r8}"
+INSTALL_ACS="${INSTALL_ACS:-0}"
 
 if [ -z "${RUN_ID:-}" ]; then
   RUN_ID="$(gh run list --repo "$REPO" --workflow snapshot.yml \
@@ -26,6 +29,18 @@ for t in $TOOLS; do
   gh run download "$RUN_ID" --repo "$REPO" -n "$t-snapshot-arm64" -D "/tmp/snap-local/$t"
   install -m755 "/tmp/snap-local/$t/$t-snapshot" "$PREFIX/$t-snapshot"
 done
+
+if [ "$INSTALL_ACS" = "1" ]; then
+  # The bundle is the one-flat-directory layout `acs --snapshot` wants:
+  # acs + d8-snapshot + r8-snapshot side by side. Extracting it also (re)installs
+  # the snapshots, so this is the recommended single step.
+  echo "--- install acs + snapshots from the bundle ---"
+  rm -rf /tmp/snap-bundle && mkdir -p /tmp/snap-bundle
+  gh run download "$RUN_ID" --repo "$REPO" -n acs-bundle-arm64 -D /tmp/snap-bundle
+  tar -xzf /tmp/snap-bundle/acs-bundle-arm64.tar.gz -C "$PREFIX" acs d8-snapshot r8-snapshot
+  "$PREFIX/acs" --version
+  echo "run acs --snapshot with: SNAPSHOT_HOME=$PREFIX"
+fi
 
 echo "--- verify ---"
 export PATH="$PREFIX:$PATH"
