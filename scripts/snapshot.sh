@@ -2,7 +2,7 @@
 # Trace a JVM tool with the native-image agent, link it with native-image,
 # and smoke-test the resulting snapshot binary.
 # Env: TOOL (d8|r8|kotlinc), KOTLIN_TAG (vX.Y.Z), R8_VERSION (X.Y.Z).
-# Requires: GraalVM 21 (JAVA_HOME), and for d8/r8 an Android SDK (ANDROID_HOME).
+# Requires: GraalVM 25 (JAVA_HOME), and for d8/r8 an Android SDK (ANDROID_HOME).
 set -euo pipefail
 
 TOOL="${TOOL:?set TOOL}"

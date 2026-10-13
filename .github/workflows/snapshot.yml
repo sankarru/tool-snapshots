@@ -79,11 +79,15 @@ jobs:
             echo "run=no" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Setup GraalVM JDK 21
+      - name: Setup GraalVM JDK 25 (latest)
         if: steps.gate.outputs.run == 'yes'
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
+          # Track the latest GraalVM (JDK 25 line). The old JDK 21 pin
+          # (GraalVM 21.0.2 / jvmci-23.1) produced native images whose
+          # filesystem-provider handling broke D8 on real Compose input
+          # ("Provider \"jar\" not found"); JDK 25 is the known-good line.
+          java-version: '25'
           distribution: 'graalvm-community'
 
       - name: Setup Gradle (artifact fetching only, no build plugins run)
