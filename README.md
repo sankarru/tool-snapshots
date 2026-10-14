@@ -4,8 +4,10 @@ GraalVM `native-image` AOT snapshots of the build tools themselves —
 `kotlinc`, R8, D8 — as instant-start native binaries, built in CI
 (GitHub Actions runners have the ~16 GB RAM native-image linking needs).
 
-The workflow also builds **`acs`** (the Rust build tool) and packs it together
-with the D8/R8 snapshots into a single, ready-to-run bundle.
+`acs` (the Rust build tool) is a separate, **local-only** project in
+`sankarru/acs` — built from source, with no releases of its own. This repo
+produces the snapshots only; `acs` consumes them at runtime via
+`[tools] snapshot_home` / `$SNAPSHOT_HOME`.
 
 ## Run
 
@@ -14,7 +16,6 @@ Actions → `tool-snapshots` → Run workflow. Inputs:
 | input | default | meaning |
 |---|---|---|
 | `tools` | `d8,r8` | comma list of `d8`, `r8`, `kotlinc` |
-| `acs_ref` | `main` | acs git ref (branch/tag/sha) to build into the bundle |
 | `kotlin_version` | `v2.2.20` | kotlinc release tag |
 | `r8_version` | `8.13.23` | R8 version from Google Maven |
 | `release_tag` | `snapshots-<run number>` | release to publish the binaries to |
@@ -31,38 +32,22 @@ means "latest green". Assets:
 
 * `<tool>-snapshot-arm64.tar.gz` — the binary and its `<tool>-snapshot-meta/`
   trace.
-* `acs` — the `acs` binary on its own.
-* `acs-bundle-arm64.tar.gz` — **`acs` + `d8-snapshot` + `r8-snapshot` side by
-  side** (nothing to install: untar a directory and run `acs` from it, or point
-  `SNAPSHOT_HOME` at it), plus a `.sha256`. Built only when `tools` contains
-  both `d8` and `r8`.
 
-### Required secret: `ACS_REPO_TOKEN`
-
-`acs` lives in the private `sankarru/acs` repo, which the runner's
-`GITHUB_TOKEN` cannot read. Add a **fine-grained PAT with `Contents: Read` on
-`sankarru/acs`** as a repository secret named `ACS_REPO_TOKEN`
-(Settings → Secrets and variables → Actions → New repository secret). The
-`acs` job fails early with an explicit message if it is missing.
-
-## The bundle
+## Running acs with the snapshots
 
 `acs --snapshot` runs D8 and R8 as the native images instead of
 `java -cp d8.jar`: no JVM start, no AppCDS/SCC, no build-tools jar. It resolves
 `d8-snapshot` / `r8-snapshot` from `[tools] snapshot_home`, then
 `$SNAPSHOT_HOME`, then `~/.local/bin`, then `PATH` — and refuses to run unless
-both self-identify as native-image snapshots. The bundle is exactly the layout
-that satisfies it:
+both self-identify as native-image snapshots. Install the snapshots (below) so
+they sit beside `acs`, then:
 
 ```sh
-# download from the latest green release, e.g. with gh:
-gh release download --repo sankarru/tool-snapshots \
-  --pattern acs-bundle-arm64.tar.gz -D /tmp/acs-bundle
-mkdir -p ~/tool-bundle && tar -xzf /tmp/acs-bundle/acs-bundle-arm64.tar.gz -C ~/tool-bundle
-# ~/tool-bundle/{acs,d8-snapshot,r8-snapshot}
-export SNAPSHOT_HOME=$HOME/tool-bundle
+bash scripts/install-local.sh          # d8-snapshot + r8-snapshot into ~/.local/bin
+# acs is built from source in its own repo: cd acs && ./scripts/install-acs.sh
+export SNAPSHOT_HOME=$HOME/.local/bin
 export ANDROID_HOME=$HOME/Android/Sdk
-~/tool-bundle/acs --snapshot --min-sdk 26 <project>
+acs --snapshot --min-sdk 26 <project>
 ```
 
 ## How it works (`scripts/snapshot.sh`)
@@ -80,18 +65,18 @@ message bundles and plugins that only show up when exercised.
 
 ### Building acs
 
-The `acs` job checks out the private repo (via `ACS_REPO_TOKEN`) and runs a
-plain release build:
+`acs` is not built here — it is a local-only project in its own repo
+(`sankarru/acs`). Build it from source there:
 
 ```sh
-cargo build --locked --release -p ca-e2e --config 'build.rustc-wrapper=""'
+cd acs && cargo build --locked --release -p ca-e2e --config 'build.rustc-wrapper=""'
+# or: ./scripts/install-acs.sh   (installs into ~/.local/bin)
 ```
 
 `--config 'build.rustc-wrapper=""'` disables the sccache wrapper acs's
-`.cargo/config.toml` sets (sccache is not installed on the runner); `--release`
-is the LLVM binary people ship; `--locked` refuses to silently re-resolve the
-committed `Cargo.lock`. acs is pure Rust — no `build.rs`, no native deps — so a
-nightly toolchain is the only requirement.
+`.cargo/config.toml` sets; `--release` is the LLVM binary; `--locked` refuses to
+silently re-resolve the committed `Cargo.lock`. acs is pure Rust — no
+`build.rs`, no native deps — so a nightly toolchain is the only requirement.
 
 ## Local use (arm64 Linux, no limitations)
 
@@ -101,14 +86,13 @@ hardcoded paths on the using machine. Install the latest green build:
 ```sh
 bash scripts/install-local.sh
 # TAG=snapshots-42 PREFIX=~/bin bash scripts/install-local.sh
-# INSTALL_ACS=1 bash scripts/install-local.sh   # also install `acs`
 ```
 
-This puts `d8-snapshot` / `r8-snapshot` on your `PATH`, prints their
-versions, and dexes a hello-world jar end to end. With `INSTALL_ACS=1` it
-extracts the bundle instead, so `acs` lands next to both snapshots and
-`SNAPSHOT_HOME=$PREFIX acs --snapshot …` just works. Afterwards use the
-snapshots exactly like the JVM tools, pointing `--lib` at your own SDK:
+This puts `d8-snapshot` / `r8-snapshot` on your `PATH`, prints their versions,
+and dexes a hello-world jar end to end. `acs` is not installed from here: build
+it from source in `sankarru/acs`; it then finds the snapshots in `~/.local/bin`
+(or `$SNAPSHOT_HOME`). Afterwards use the snapshots exactly like the JVM tools,
+pointing `--lib` at your own SDK:
 
 ```sh
 export ANDROID_HOME=$HOME/Android/Sdk

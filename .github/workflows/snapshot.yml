@@ -1,4 +1,4 @@
-name: tool-snapshots (GraalVM native-image of kotlinc/R8/D8 + acs bundle)
+name: tool-snapshots (GraalVM native-image of kotlinc/R8/D8)
 
 on:
   workflow_dispatch:
@@ -7,10 +7,6 @@ on:
         description: 'Tools to snapshot (comma: d8,r8,kotlinc)'
         required: true
         default: 'd8,r8'
-      acs_ref:
-        description: 'acs git ref to build into the bundle (branch/tag/sha)'
-        required: true
-        default: 'main'
       kotlin_version:
         description: 'Kotlin release tag (e.g. v2.2.20)'
         required: true
@@ -55,7 +51,7 @@ jobs:
             # lookup can never pick a half-finished run.
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "tool snapshots $TAG" --prerelease \
-              --notes "d8/r8/kotlinc native-image snapshots + acs. Auto-published by workflow run ${{ github.run_number }}."
+              --notes "d8/r8/kotlinc native-image snapshots. Auto-published by workflow run ${{ github.run_number }}."
           fi
 
   snapshot:
@@ -135,130 +131,6 @@ jobs:
             "${{ matrix.tool }}-snapshot-arm64.tar.gz" \
             --repo "$GITHUB_REPOSITORY" --clobber
 
-  # ---------------------------------------------------------------------------
-  # acs: the build tool itself, cross-repo. acs is pure Rust (no build.rs, no
-  # native deps), so a stock nightly toolchain is the only requirement. Its
-  # `--snapshot` mode resolves d8-snapshot / r8-snapshot from a shared dir; the
-  # `bundle` job puts all three binaries side by side.
-  # ---------------------------------------------------------------------------
-  acs:
-    name: build acs (arm64)
-    needs: release
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
-    steps:
-      # The private acs repo cannot be read by the runner's GITHUB_TOKEN, so a
-      # fine-grained PAT with Contents:Read on sankarru/acs must be present as
-      # the ACS_REPO_TOKEN secret. Fail with a clear message rather than a bare
-      # "Repository not found" from checkout.
-      - name: Require ACS_REPO_TOKEN
-        env:
-          TOKEN: ${{ secrets.ACS_REPO_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::error::ACS_REPO_TOKEN is not set. Create a fine-grained PAT with Contents:Read on sankarru/acs and add it as a repository secret (Settings > Secrets and variables > Actions)."
-            exit 1
-          fi
-
-      - name: Checkout acs
-        uses: actions/checkout@v4
-        with:
-          repository: sankarru/acs
-          ref: ${{ inputs.acs_ref }}
-          token: ${{ secrets.ACS_REPO_TOKEN }}
-          path: acs
-          # Never persist the PAT into .git/config of the checked-out tree.
-          persist-credentials: false
-
-      # rust-toolchain.toml pins nightly + the cranelift codegen backend (used
-      # by acs's `cargo dev-build` alias). Release builds use LLVM, but rustup
-      # installs the declared component regardless, so request it explicitly.
-      - name: Setup Rust (nightly, matches rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustc-codegen-cranelift
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        # Best-effort: never let a cache-quota hiccup fail the build.
-        continue-on-error: true
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('acs/Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-${{ runner.arch }}-
-
-      # `--config 'build.rustc-wrapper=""'` disables the sccache wrapper that
-      # acs's .cargo/config.toml sets; sccache is not installed on the runner.
-      # `--release` (LLVM) is the binary people actually ship, and `--locked`
-      # refuses to silently re-resolve the committed Cargo.lock.
-      - name: Build acs (release)
-        working-directory: acs
-        run: |
-          cargo build --locked --release -p ca-e2e \
-            --config 'build.rustc-wrapper=""'
-
-      - name: Smoke acs
-        run: |
-          ./acs/target/release/acs --version
-          ./acs/target/release/acs --help >/dev/null
-
-      - name: Publish acs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
-            acs/target/release/acs --repo "$GITHUB_REPOSITORY" --clobber
-
-  bundle:
-    name: bundle acs + d8 + r8 (arm64)
-    needs: [release, snapshot, acs]
-    # Only meaningful when both snapshots were built in this run.
-    if: contains(inputs.tools, 'd8') && contains(inputs.tools, 'r8')
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    steps:
-      # One flat directory so `acs --snapshot` finds the two snapshots beside
-      # the binary it was launched from (it resolves them via snapshot_home /
-      # $SNAPSHOT_HOME / ~/.local/bin / PATH, and both must self-identify as
-      # native-image snapshots). Result: tar out and run, no install step.
-      - name: Fetch the pieces from the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          gh release download "${{ needs.release.outputs.tag }}" \
-            --repo "$GITHUB_REPOSITORY" \
-            -p 'd8-snapshot-arm64.tar.gz' -p 'r8-snapshot-arm64.tar.gz' -p 'acs' \
-            -D dist
-          tar -xzf dist/d8-snapshot-arm64.tar.gz -C dist
-          tar -xzf dist/r8-snapshot-arm64.tar.gz -C dist
-
-      - name: Assemble bundle
-        run: |
-          set -euo pipefail
-          mkdir -p bundle
-          install -m755 dist/d8-snapshot bundle/d8-snapshot
-          install -m755 dist/r8-snapshot bundle/r8-snapshot
-          install -m755 dist/acs         bundle/acs
-          echo "--- smoke: the three binaries run ---"
-          ./bundle/d8-snapshot --version
-          ./bundle/r8-snapshot --version
-          ./bundle/acs --version
-          tar -czf acs-bundle-arm64.tar.gz -C bundle acs d8-snapshot r8-snapshot
-          sha256sum acs-bundle-arm64.tar.gz > acs-bundle-arm64.tar.gz.sha256
-          echo "--- bundle contents ---"
-          tar -tzf acs-bundle-arm64.tar.gz
-          ls -la
-
-      - name: Publish bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ needs.release.outputs.tag }}" \
-            acs-bundle-arm64.tar.gz acs-bundle-arm64.tar.gz.sha256 \
-            --repo "$GITHUB_REPOSITORY" --clobber
-
   smoke-compose:
     name: smoke snapshots on compose-aot (arm64)
     needs: [release, snapshot]
@@ -322,7 +194,7 @@ jobs:
   # install-local.sh looks up the latest stable release.
   finalize:
     name: finalize release
-    needs: [release, snapshot, acs, bundle, smoke-compose]
+    needs: [release, snapshot, smoke-compose]
     if: success()
     runs-on: ubuntu-24.04-arm
     steps:

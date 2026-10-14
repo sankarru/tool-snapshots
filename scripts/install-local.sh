@@ -7,16 +7,16 @@
 # Usage:
 #   PREFIX=~/.local/bin bash scripts/install-local.sh        # latest stable release
 #   TAG=snapshots-42 bash scripts/install-local.sh           # a specific release
-#   INSTALL_ACS=1 bash scripts/install-local.sh              # also install acs
 # Env: REPO (default sankarru/tool-snapshots), TOOLS (default "d8 r8"),
-#      TAG (default: the latest stable release), INSTALL_ACS (default 0; 1
-#      pulls `acs` + both snapshots from the bundle).
+#      TAG (default: the latest stable release).
+# This repo ships the snapshots only. `acs` is a separate, local-only project
+# (sankarru/acs): build it from source there (./scripts/install-acs.sh) and
+# point it at these binaries via [tools] snapshot_home / $SNAPSHOT_HOME.
 set -euo pipefail
 
 REPO="${REPO:-sankarru/tool-snapshots}"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 TOOLS="${TOOLS:-d8 r8}"
-INSTALL_ACS="${INSTALL_ACS:-0}"
 
 # Binaries live as release assets, not run artifacts (artifact storage is a
 # small account-wide quota; release assets are not metered by it). Prereleases
@@ -36,18 +36,6 @@ for t in $TOOLS; do
   tar -xzf "$d/$t-snapshot-arm64.tar.gz" -C "$d"
   install -m755 "$d/$t-snapshot" "$PREFIX/$t-snapshot"
 done
-
-if [ "$INSTALL_ACS" = "1" ]; then
-  # The bundle is the one-flat-directory layout `acs --snapshot` wants:
-  # acs + d8-snapshot + r8-snapshot side by side. Extracting it also (re)installs
-  # the snapshots, so this is the recommended single step.
-  echo "--- install acs + snapshots from the bundle ---"
-  rm -rf /tmp/snap-bundle && mkdir -p /tmp/snap-bundle
-  gh release download "$TAG" --repo "$REPO" -p 'acs-bundle-arm64.tar.gz' -D /tmp/snap-bundle
-  tar -xzf /tmp/snap-bundle/acs-bundle-arm64.tar.gz -C "$PREFIX" acs d8-snapshot r8-snapshot
-  "$PREFIX/acs" --version
-  echo "run acs --snapshot with: SNAPSHOT_HOME=$PREFIX"
-fi
 
 echo "--- verify ---"
 export PATH="$PREFIX:$PATH"
